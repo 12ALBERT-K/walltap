@@ -1,7 +1,7 @@
 {
-  "name": "whatapp",
+  "name": "walltap",
   "version": "1.0.0",
-  "description": "A real-time public whatapp built with Node.js, Express, and Supabase.",
+  "description": "A real-time public Walltap built with Node.js, Express, and Supabase.",
   "main": "server.js",
   "engines": {
     "node": ">=18"

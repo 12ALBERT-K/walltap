@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: whatapp
+    name: walltap
     runtime: node
     plan: free
     buildCommand: npm ci

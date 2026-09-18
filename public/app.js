@@ -1,5 +1,5 @@
 // ============================================================
-//  app.js  —  Whatapp frontend logic
+//  app.js  —  Walltap frontend logic
 //  No frameworks, no build step. Plain ES2020 JavaScript.
 //  Auth + data are backed by Supabase (see server.js).
 // ============================================================

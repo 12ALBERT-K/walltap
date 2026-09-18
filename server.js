@@ -398,7 +398,7 @@ async function main() {
   }
 
   app.listen(PORT, () => {
-    console.log(`\n✦  Whatapp running → http://localhost:${PORT}`);
+    console.log(`\n✦  Walltap running → http://localhost:${PORT}`);
     console.log(`   Backend       → Supabase ${SUPABASE_URL ? "configured" : "(not configured)"}\n`);
   });
 }
