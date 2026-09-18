@@ -1,0 +1,17 @@
+{
+  "name": "whatapp",
+  "version": "1.0.0",
+  "description": "A real-time public whatapp with Node.js, Express, and SQLite.",
+  "main": "server.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "npx nodemon server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "express": "^4.19.2",
+    "express-session": "^1.19.0",
+    "multer": "^2.2.0"
+  }
+}

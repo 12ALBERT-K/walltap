@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: whatapp
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    disk:
+      name: whatapp-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DATA_DIR
+        value: /var/data
+      - key: UPLOADS_DIR
+        value: /var/data/uploads
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: MAX_FILE_SIZE_MB
+        value: 50
+      - key: RESEND_API_KEY
+        sync: false
