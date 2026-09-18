@@ -3,7 +3,7 @@ services:
     name: whatapp
     runtime: node
     plan: starter
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: npm start
     disk:
       name: whatapp-data
