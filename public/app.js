@@ -1,7 +1,21 @@
 // ============================================================
 //  app.js  —  Whatapp frontend logic
 //  No frameworks, no build step. Plain ES2020 JavaScript.
+//  Auth + data are backed by Supabase (see server.js).
 // ============================================================
+
+// ── Supabase client ───────────────────────────────────────────
+const SUPABASE_URL      = window.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY || "";
+
+// Capture the recovery flag before the Supabase client consumes the URL hash.
+const _hash   = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+const _query  = new URLSearchParams(location.search);
+const isRecoveryLink = _hash.get("type") === "recovery" || _query.get("recovery") === "1";
+
+const supabase = (window.supabase && SUPABASE_URL && SUPABASE_ANON_KEY)
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
 // ── DOM references ────────────────────────────────────────────
 const feed        = document.getElementById("feed");
@@ -13,22 +27,25 @@ const toast       = document.getElementById("toast");
 const fileInput   = document.getElementById("file-input");
 const fileLabel   = document.getElementById("file-label");
 const authOverlay = document.getElementById("auth-overlay");
-const authUser    = document.getElementById("auth-username");
+const authSubtitle = document.getElementById("auth-subtitle");
+const authDisplay = document.getElementById("auth-display");
+const authEmail   = document.getElementById("auth-email");
 const authPass    = document.getElementById("auth-password");
 const authBtn     = document.getElementById("auth-btn");
 const authError   = document.getElementById("auth-error");
 const authToggle  = document.getElementById("auth-toggle");
 const authForgot  = document.getElementById("auth-forgot");
-const resetPanel      = document.getElementById("reset-panel");
-const resetNote       = document.getElementById("reset-note");
-const resetUser       = document.getElementById("reset-username");
-const resetRequestBtn = document.getElementById("reset-request-btn");
-const resetError      = document.getElementById("reset-error");
-const resetOr         = document.getElementById("reset-or");
-const resetNewPass    = document.getElementById("reset-new-pass");
-const resetConfirmPass = document.getElementById("reset-confirm-pass");
-const resetConfirmBtn = document.getElementById("reset-confirm-btn");
-const resetBack       = document.getElementById("reset-back");
+const resetPanel       = document.getElementById("reset-panel");
+const resetNote        = document.getElementById("reset-note");
+const resetRequestGroup = document.getElementById("reset-request-group");
+const resetEmail       = document.getElementById("reset-email");
+const resetRequestBtn  = document.getElementById("reset-request-btn");
+const recoveryPanel    = document.getElementById("recovery-panel");
+const recoveryNewPass  = document.getElementById("recovery-new-pass");
+const recoveryConfirmPass = document.getElementById("recovery-confirm-pass");
+const recoveryConfirmBtn  = document.getElementById("recovery-confirm-btn");
+const resetError       = document.getElementById("reset-error");
+const resetBack        = document.getElementById("reset-back");
 const logoutBtn   = document.getElementById("logout-btn");
 const headerUser  = document.getElementById("header-user");
 const attachPrev  = document.getElementById("attach-preview");
@@ -37,7 +54,9 @@ const recStatus   = document.getElementById("rec-status");
 const recTime     = document.getElementById("rec-time");
 
 let toastTimer  = null;
-let currentUser = null;
+let currentUser = null;      // display name
+let currentUserId = null;    // Supabase auth user id
+let accessToken = null;      // current Supabase access token
 let isLogin     = true;
 let sse         = null;
 let attachments = [];
@@ -51,8 +70,6 @@ const localIds  = new Set();
 
 // ============================================================
 //  showToast(message)
-//  Briefly displays a small notification at the bottom of the
-//  screen for errors or confirmations.
 // ============================================================
 function showToast(message) {
   toast.textContent = message;
@@ -64,12 +81,10 @@ function showToast(message) {
 
 // ============================================================
 //  formatTime(timestamp)
-//  Converts a Unix ms timestamp to a human-readable string
-//  like "Today at 3:42 PM" or "Jun 10 at 11:05 AM".
 // ============================================================
 function formatTime(ts) {
   if (!ts) return "";
-  const d   = new Date(ts);
+  const d   = new Date(Number(ts));
   const now = new Date();
   const isToday =
     d.getDate()     === now.getDate()  &&
@@ -85,8 +100,6 @@ function formatTime(ts) {
 
 // ============================================================
 //  syncEmptyState()
-//  Shows or hides the "board is clean" placeholder depending
-//  on whether any .post elements currently exist in the feed.
 // ============================================================
 function syncEmptyState() {
   const hasPosts = feed.querySelector(".post") !== null;
@@ -102,22 +115,20 @@ async function parseJsonSafe(response) {
   }
 }
 
+// ============================================================
+//  apiFetch(url, options)
+//  Adds the Supabase access token to every API request.
+// ============================================================
+async function apiFetch(url, options = {}) {
+  const opts = { ...options, headers: { ...(options.headers || {}) } };
+  if (accessToken) opts.headers.Authorization = `Bearer ${accessToken}`;
+  return fetch(url, opts);
+}
+
 
 // ============================================================
 //  createPostElement(post)
-//  Builds and returns a complete <section class="post"> DOM
-//  node from a post object { id, text, timestamp, file }.
-//
-//  HOW DYNAMIC SECTION CREATION WORKS:
-//    This function is called in two places:
-//      1. Inside loadPosts() for every post returned by the server.
-//      2. After a successful POST /api/posts to show the new post
-//         immediately without a full page reload.
-//
-//    Each call creates the elements from scratch with
-//    document.createElement(), fills them with data, wires up
-//    the Delete button, assembles them, and returns the root
-//    <section>. The caller decides where in the DOM to put it.
+//  Builds a complete <section class="post"> DOM node.
 // ============================================================
 function createPostElement(post) {
   const section = document.createElement("section");
@@ -125,7 +136,8 @@ function createPostElement(post) {
   section.dataset.id = post.id;
   section.dataset.author = post.author;
   section.dataset.ts = post.timestamp;
-  if (currentUser && post.author === currentUser) section.classList.add("own");
+  const isOwn = currentUserId && post.authorId === currentUserId;
+  if (isOwn) section.classList.add("own");
 
   const authorEl = document.createElement("span");
   authorEl.classList.add("post-author");
@@ -144,7 +156,7 @@ function createPostElement(post) {
 
   if (post.files && post.files.length) {
     post.files.forEach(file => {
-      const url  = "/uploads/" + file.filename;
+      const url  = file.url || ("/uploads/" + file.filename);
       const mime = file.mimetype || "";
       if (mime.startsWith("image/")) {
         const a = document.createElement("a");
@@ -195,7 +207,7 @@ function createPostElement(post) {
   ticks.textContent = "✓✓";
   meta.appendChild(ticks);
 
-  if (currentUser && post.author === currentUser) {
+  if (isOwn) {
     const deleteBtn = document.createElement("button");
     deleteBtn.classList.add("post-delete");
     deleteBtn.title = "Erase this post";
@@ -215,17 +227,15 @@ function createPostElement(post) {
 
 
 // ============================================================
-//  dateKey(ts) / dateLabel(ts) / maybeAddDateChip(ts)
-//  Renders WhatsApp-style date separators ("Today", "Yesterday",
-//  or a full date) between messages from different days.
+//  Date separators + grouping
 // ============================================================
 function dateKey(ts) {
-  const d = new Date(ts);
+  const d = new Date(Number(ts));
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
 function dateLabel(ts) {
-  const d = new Date(ts);
+  const d = new Date(Number(ts));
   const today = new Date();
   const yest  = new Date();
   yest.setDate(today.getDate() - 1);
@@ -249,11 +259,6 @@ function maybeAddDateChip(ts) {
   feed.appendChild(chip);
 }
 
-// ============================================================
-//  maybeGroup(section)
-//  When a post continues a run by the same author, flag it as
-//  "grouped" so CSS tightens the spacing and hides the name.
-// ============================================================
 function maybeGroup(section) {
   const posts = feed.querySelectorAll(".post");
   const prev  = posts[posts.length - 1];
@@ -262,19 +267,10 @@ function maybeGroup(section) {
   }
 }
 
-// ============================================================
-//  scrollToBottom(smooth)
-//  Keeps the newest message visible at the bottom of the feed.
-// ============================================================
 function scrollToBottom(smooth) {
   feed.scrollIntoView({ block: "end", behavior: smooth ? "smooth" : "auto" });
 }
 
-// ============================================================
-//  appendPost(section, scroll)
-//  Adds a post to the bottom of the feed in chat-log order,
-//  handling date separators, grouping, empty-state, and scroll.
-// ============================================================
 function appendPost(section, scroll = true) {
   maybeAddDateChip(Number(section.dataset.ts));
   maybeGroup(section);
@@ -283,22 +279,19 @@ function appendPost(section, scroll = true) {
   if (scroll) scrollToBottom(true);
 }
 
+
 // ============================================================
 //  loadPosts()
-//  Called once on page load.
-//  Fetches GET /api/posts, then renders each post by calling
-//  createPostElement() and appending it to #feed (oldest first).
 // ============================================================
 async function loadPosts() {
   try {
-    const res   = await fetch("/api/posts", { credentials: "same-origin" });
+    const res = await apiFetch("/api/posts");
     if (!res.ok) {
       const { error } = await parseJsonSafe(res);
       throw new Error(error || `Server error ${res.status}`);
     }
-    const posts = await parseJsonSafe(res);   // array of {id, text, timestamp}
+    const posts = await parseJsonSafe(res);
 
-    // Render each post (skip any that SSE already inserted during fetch).
     posts.forEach(post => {
       if (feed.querySelector(`[data-id="${post.id}"]`)) return;
       const section = createPostElement(post);
@@ -316,8 +309,6 @@ async function loadPosts() {
 
 // ============================================================
 //  submitPost()
-//  Reads the textarea, POSTs the text to /api/posts, and
-//  prepends the returned post to the top of the feed.
 // ============================================================
 async function submitPost() {
   if (postBtn.disabled) return;
@@ -334,11 +325,7 @@ async function submitPost() {
     if (text) formData.append("text", text);
     attachments.forEach(file => formData.append("files", file));
 
-    const res = await fetch("/api/posts", {
-      method: "POST",
-      credentials: "same-origin",
-      body:   formData
-    });
+    const res = await apiFetch("/api/posts", { method: "POST", body: formData });
 
     if (!res.ok) {
       const { error } = await parseJsonSafe(res);
@@ -348,13 +335,11 @@ async function submitPost() {
     const newPost = await parseJsonSafe(res);
     localIds.add(newPost.id);
 
-    // Insert locally, but only if SSE didn't already insert it
     if (!feed.querySelector(`[data-id="${newPost.id}"]`)) {
       const section = createPostElement(newPost);
       appendPost(section);
     }
 
-    // Clear inputs
     input.value       = "";
     input.style.height = "auto";
     fileLabel.classList.remove("has-file");
@@ -374,20 +359,10 @@ async function submitPost() {
 
 // ============================================================
 //  deletePost(id, sectionEl)
-//  Sends DELETE /api/posts/:id to the server.
-//  On success, animates the <section> out and removes it from
-//  the DOM. The record is also gone from posts.json on the server.
-//
-//  HOW FILE DELETION WORKS ON THE BACKEND (server.js summary):
-//    1. Express receives DELETE /api/posts/:id
-//    2. readDB() loads the full array from posts.json
-//    3. Array.filter() creates a new array without the target post
-//    4. writeDB() overwrites posts.json with the filtered array
-//    5. Server responds 204 — the post no longer exists anywhere
 // ============================================================
 async function deletePost(id, sectionEl) {
   try {
-    const res = await fetch(`/api/posts/${id}`, { method: "DELETE", credentials: "same-origin" });
+    const res = await apiFetch(`/api/posts/${id}`, { method: "DELETE" });
     if (res.status === 404) {
       sectionEl.remove();
       syncEmptyState();
@@ -413,10 +388,8 @@ async function deletePost(id, sectionEl) {
 
 // ============================================================
 //  Attachment helpers
-//  Single source of truth for files attached to the next post.
-//  Files arrive via browse, clipboard paste, or drag & drop.
 // ============================================================
-const MAX_FILES = 10;
+const MAX_FILES = 5;
 
 function formatBytes(bytes) {
   if (!bytes) return "";
@@ -497,12 +470,6 @@ function renderAttachments() {
   });
 }
 
-// ============================================================
-//  updateSendBtn()
-//  Send stays visible; it just turns disabled until there is
-//  text or an attachment. Mic is a separate, always-visible
-//  button next to it.
-// ============================================================
 function updateSendBtn() {
   if (recorder) { postBtn.disabled = true; return; }
   postBtn.disabled = input.value.trim().length === 0 && attachments.length === 0;
@@ -510,9 +477,7 @@ function updateSendBtn() {
 
 
 // ============================================================
-//  Voice notes — capture from the mic and attach the audio
-//  (browsers require a secure context, so this works on
-//  localhost or HTTPS, not plain LAN HTTP).
+//  Voice notes
 // ============================================================
 const REC_MAX_SECONDS = 120;
 
@@ -610,11 +575,10 @@ function clearRecUi() {
 }
 
 
-// ── Event listeners ───────────────────────────────────────────
+// ── Composer event listeners ──────────────────────────────────
 postBtn.addEventListener("click", submitPost);
 micBtn.addEventListener("click", toggleMic);
 
-// Enter = post, Shift+Enter = newline
 input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -622,14 +586,12 @@ input.addEventListener("keydown", e => {
   }
 });
 
-// File input — append selected files as attachments
 fileInput.addEventListener("change", () => {
   [...fileInput.files].forEach(f => addAttachment(f));
   fileInput.value = "";
   fileLabel.classList.toggle("has-file", attachments.length > 0);
 });
 
-// Clipboard paste — attach any pasted files (images, docs, ...)
 document.addEventListener("paste", e => {
   if (authOverlay.classList.contains("hidden") === false) return;
   const items = e.clipboardData && e.clipboardData.items;
@@ -643,7 +605,6 @@ document.addEventListener("paste", e => {
   if (added > 0) e.preventDefault();
 });
 
-// Drag & drop — attach dropped files anywhere on the board
 let dragDepth = 0;
 function hasFiles(types) {
   return types && Array.prototype.indexOf.call(types, "Files") !== -1;
@@ -674,7 +635,6 @@ document.addEventListener("drop", e => {
   }
 });
 
-// Auto-grow the textarea as the user types
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 130) + "px";
@@ -684,170 +644,201 @@ input.addEventListener("input", () => {
 
 // ── Auth helpers ──────────────────────────────────────────────
 
-async function checkAuth() {
-  try {
-    const res = await fetch("/api/me", { credentials: "same-origin" });
-    const { user, error } = await parseJsonSafe(res);
-    if (res.ok && user) {
-      currentUser = user.username;
-      authOverlay.classList.add("hidden");
-      headerUser.textContent = currentUser;
-      loadPosts();
-      connectSSE();
-    } else {
-      authOverlay.classList.remove("hidden");
-      if (error) console.warn("Auth check failed:", error);
-    }
-  } catch (err) {
-    console.error("checkAuth failed:", err);
-    authOverlay.classList.remove("hidden");
+function displayNameOf(user) {
+  const md = user.user_metadata || {};
+  return md.display_name || md.username || (user.email || "").split("@")[0] || "user";
+}
+
+function applySession(session) {
+  if (session && session.user) {
+    accessToken   = session.access_token || null;
+    currentUserId = session.user.id;
+    currentUser   = displayNameOf(session.user);
+  } else {
+    accessToken   = null;
+    currentUserId = null;
+    currentUser   = null;
   }
 }
 
-async function handleAuth() {
-  const username = authUser.value.trim();
-  const password = authPass.value;
-  if (!username || !password) return;
-  authBtn.disabled    = true;
-  authBtn.textContent = isLogin ? "Signing in…" : "Creating account…";
-  authError.textContent = "";
-
-  try {
-    const res = await fetch(`/api/${isLogin ? "login" : "register"}`, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ username, password })
-    });
-    const data = await parseJsonSafe(res);
-    if (!res.ok) throw new Error(data.error || "Something went wrong");
-    currentUser = data.username;
-    authOverlay.classList.add("hidden");
-    headerUser.textContent = currentUser;
-    loadPosts();
-    connectSSE();
-  } catch (err) {
-    authError.textContent = err.message;
-  } finally {
-    authBtn.disabled    = false;
-    authBtn.textContent = isLogin ? "Sign in" : "Create account";
-  }
+function setMainAuthVisible(v) {
+  authSubtitle.classList.toggle("hidden", !v);
+  authEmail.classList.toggle("hidden", !v);
+  authPass.classList.toggle("hidden", !v);
+  authDisplay.classList.toggle("hidden", !v || isLogin);
+  authBtn.classList.toggle("hidden", !v);
+  authError.classList.toggle("hidden", !v);
+  authToggle.classList.toggle("hidden", !v);
+  authForgot.classList.toggle("hidden", !v);
 }
 
-async function handleLogout() {
-  try { await fetch("/api/logout", { method: "POST", credentials: "same-origin" }); } catch (_) {}
-  if (sse) sse.close();
-  location.reload();
+function syncAuthToggle() {
+  authBtn.textContent    = isLogin ? "Sign in" : "Create account";
+  authToggle.textContent = isLogin ? "No account? Create one" : "Already have an account? Sign in";
+  authPass.setAttribute("autocomplete", isLogin ? "current-password" : "new-password");
+  authDisplay.classList.toggle("hidden", isLogin);
 }
 
-// ── Password reset ────────────────────────────────────────────
 function showSignInForm() {
   resetPanel.classList.add("hidden");
-  authUser.classList.remove("hidden");
-  authPass.classList.remove("hidden");
-  authBtn.classList.remove("hidden");
-  authError.classList.remove("hidden");
-  authToggle.classList.remove("hidden");
-  authForgot.classList.remove("hidden");
+  setMainAuthVisible(true);
   resetError.textContent = "";
 }
 
 function showResetRequest() {
   resetPanel.classList.remove("hidden");
-  authUser.classList.add("hidden");
-  authPass.classList.add("hidden");
-  authBtn.classList.add("hidden");
-  authError.classList.add("hidden");
-  authToggle.classList.add("hidden");
-  authForgot.classList.add("hidden");
-  resetNote.textContent = "Enter your username and we'll send a reset link to the email on the account.";
-  resetOr.classList.remove("hidden");
-  resetRequestBtn.classList.remove("hidden");
-  resetUser.classList.remove("hidden");
-  resetNewPass.classList.add("hidden");
-  resetConfirmPass.classList.add("hidden");
-  resetConfirmBtn.classList.add("hidden");
+  setMainAuthVisible(false);
+  resetRequestGroup.classList.remove("hidden");
+  recoveryPanel.classList.add("hidden");
+  resetNote.textContent = "Enter your email and we'll send a reset link.";
   resetError.textContent = "";
 }
 
+function enterRecoveryMode() {
+  authOverlay.classList.remove("hidden");
+  resetPanel.classList.remove("hidden");
+  setMainAuthVisible(false);
+  resetRequestGroup.classList.add("hidden");
+  recoveryPanel.classList.remove("hidden");
+  resetNote.textContent = "Choose a new password.";
+  resetError.textContent = "";
+}
+
+function enterApp() {
+  authOverlay.classList.add("hidden");
+  headerUser.textContent = currentUser || "";
+  loadPosts();
+  connectSSE();
+}
+
+function showSignInOverlay() {
+  authOverlay.classList.remove("hidden");
+  showSignInForm();
+}
+
+async function checkAuth() {
+  if (!supabase) {
+    authOverlay.classList.remove("hidden");
+    authError.textContent = "Supabase is not configured on the server.";
+    return;
+  }
+  try {
+    const { data } = await supabase.auth.getSession();
+    applySession(data.session);
+
+    if (isRecoveryLink && data.session) { enterRecoveryMode(); return; }
+    if (data.session) enterApp();
+    else showSignInOverlay();
+  } catch (err) {
+    console.error("checkAuth failed:", err);
+    showSignInOverlay();
+  }
+}
+
+async function handleAuth() {
+  if (!supabase) return;
+  const email    = authEmail.value.trim();
+  const password = authPass.value;
+  const display  = authDisplay.value.trim();
+
+  if (!email || !password) {
+    authError.textContent = "Email and password are required.";
+    return;
+  }
+
+  authBtn.disabled = true;
+  authBtn.textContent = isLogin ? "Signing in…" : "Creating account…";
+  authError.textContent = "";
+
+  try {
+    if (isLogin) {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      applySession(data.session);
+      enterApp();
+    } else {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { display_name: display || (email.split("@")[0]) } }
+      });
+      if (error) throw error;
+      if (data.session) {
+        applySession(data.session);
+        enterApp();
+      } else {
+        showToast("Check your email to confirm your account, then sign in.");
+        isLogin = true;
+      }
+    }
+  } catch (err) {
+    authError.textContent = err.message || "Something went wrong.";
+  } finally {
+    authBtn.disabled = false;
+    syncAuthToggle();
+  }
+}
+
+async function handleLogout() {
+  try { if (supabase) await supabase.auth.signOut(); } catch (_) {}
+  if (sse) sse.close();
+  location.reload();
+}
+
 async function handleResetRequest() {
-  const username = resetUser.value.trim();
-  if (!username) return;
+  const email = resetEmail.value.trim();
+  if (!email) return;
+  if (!supabase) { resetError.textContent = "Supabase is not configured."; return; }
+
   resetRequestBtn.disabled    = true;
   resetRequestBtn.textContent = "Sending…";
   try {
-    const res = await fetch("/api/reset/request", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ username })
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + "/?recovery=1"
     });
-    const data = await parseJsonSafe(res);
-    if (!res.ok) throw new Error(data.error || "Something went wrong");
-    resetNote.textContent = "If an account exists for that username, a reset link has been sent to its email address.";
+    if (error) throw error;
+    resetNote.textContent = "If an account exists for that email, a reset link has been sent.";
     resetError.textContent = "";
   } catch (err) {
-    resetError.textContent = err.message;
+    resetError.textContent = err.message || "Something went wrong.";
   } finally {
     resetRequestBtn.disabled    = false;
     resetRequestBtn.textContent = "Send reset link";
   }
 }
 
-async function handleResetConfirm() {
-  const pass  = resetNewPass.value;
-  const pass2 = resetConfirmPass.value;
-  if (pass.length < 4) { resetError.textContent = "Password must be at least 4 characters."; return; }
+async function handleRecoveryConfirm() {
+  const pass  = recoveryNewPass.value;
+  const pass2 = recoveryConfirmPass.value;
+  if (pass.length < 6) { resetError.textContent = "Password must be at least 6 characters."; return; }
   if (pass !== pass2)  { resetError.textContent = "Passwords don't match."; return; }
+  if (!supabase)       { resetError.textContent = "Supabase is not configured."; return; }
 
-  const token = new URLSearchParams(location.search).get("reset");
-  if (!token) { resetError.textContent = "Missing reset token."; return; }
-
-  resetConfirmBtn.disabled    = true;
-  resetConfirmBtn.textContent = "Saving…";
+  recoveryConfirmBtn.disabled    = true;
+  recoveryConfirmBtn.textContent = "Saving…";
   try {
-    const res = await fetch("/api/reset/confirm", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ token, newPassword: pass })
-    });
-    const data = await parseJsonSafe(res);
-    if (!res.ok) throw new Error(data.error || "Something went wrong");
+    const { error } = await supabase.auth.updateUser({ password: pass });
+    if (error) throw error;
     history.replaceState(null, "", location.pathname);
+    await supabase.auth.signOut();
+    applySession(null);
     showToast("Password updated. Sign in with your new password.");
     showSignInForm();
     authPass.focus();
   } catch (err) {
-    resetError.textContent = err.message;
+    resetError.textContent = err.message || "Something went wrong.";
   } finally {
-    resetConfirmBtn.disabled    = false;
-    resetConfirmBtn.textContent = "Set new password";
+    recoveryConfirmBtn.disabled    = false;
+    recoveryConfirmBtn.textContent = "Set new password";
   }
 }
 
-function initResetMode() {
-  const token = new URLSearchParams(location.search).get("reset");
-  if (!token) return;
-  resetPanel.classList.remove("hidden");
-  authUser.classList.add("hidden");
-  authPass.classList.add("hidden");
-  authBtn.classList.add("hidden");
-  authError.classList.add("hidden");
-  authToggle.classList.add("hidden");
-  authForgot.classList.add("hidden");
-  resetNote.textContent = "Choose a new password.";
-  resetOr.classList.add("hidden");
-  resetRequestBtn.classList.add("hidden");
-  resetUser.classList.add("hidden");
-  resetNewPass.classList.remove("hidden");
-  resetConfirmPass.classList.remove("hidden");
-  resetConfirmBtn.classList.remove("hidden");
-}
 
-// ── SSE — real‑time updates ──────────────────────────────────
+// ── SSE — real-time updates ──────────────────────────────────
 function connectSSE() {
-  sse = new EventSource("/api/events", { withCredentials: true });
+  if (!accessToken) return;
+  if (sse) sse.close();
+  sse = new EventSource("/api/events?token=" + encodeURIComponent(accessToken));
 
   sse.addEventListener("post-created", e => {
     const post = JSON.parse(e.data);
@@ -869,10 +860,19 @@ function connectSSE() {
   sse.addEventListener("error", () => {});
 }
 
+// Keep our cached token/identity fresh as Supabase refreshes sessions.
+if (supabase) {
+  supabase.auth.onAuthStateChange((_event, session) => {
+    applySession(session);
+    if (session && currentUser) headerUser.textContent = currentUser;
+  });
+}
+
+
 // ── Auth event listeners ─────────────────────────────────────
 authBtn.addEventListener("click", handleAuth);
 
-authUser.addEventListener("keydown", e => {
+authEmail.addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); authPass.focus(); }
 });
 authPass.addEventListener("keydown", e => {
@@ -881,25 +881,28 @@ authPass.addEventListener("keydown", e => {
 
 authToggle.addEventListener("click", () => {
   isLogin = !isLogin;
-  authBtn.textContent = isLogin ? "Sign in" : "Create account";
-  authToggle.textContent = isLogin ? "No account? Create one" : "Already have an account? Sign in";
   authError.textContent = "";
+  syncAuthToggle();
 });
 
 authForgot.addEventListener("click", showResetRequest);
 resetBack.addEventListener("click", showSignInForm);
 resetRequestBtn.addEventListener("click", handleResetRequest);
-resetConfirmBtn.addEventListener("click", handleResetConfirm);
-resetUser.addEventListener("keydown", e => {
+recoveryConfirmBtn.addEventListener("click", handleRecoveryConfirm);
+resetEmail.addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); handleResetRequest(); }
 });
-resetNewPass.addEventListener("keydown", e => {
-  if (e.key === "Enter") { e.preventDefault(); handleResetConfirm(); }
+recoveryNewPass.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); recoveryConfirmPass.focus(); }
+});
+recoveryConfirmPass.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); handleRecoveryConfirm(); }
 });
 
 logoutBtn.addEventListener("click", handleLogout);
 
 // ── Init ─────────────────────────────────────────────────────
+syncAuthToggle();
 updateSendBtn();
-initResetMode();
+if (isRecoveryLink) enterRecoveryMode();
 checkAuth();

@@ -1,98 +1,89 @@
 const express    = require("express");
-const fs         = require("fs");
 const path       = require("path");
 const crypto     = require("crypto");
 const multer     = require("multer");
-const session    = require("express-session");
-const Database   = require("better-sqlite3");
+const { createClient } = require("@supabase/supabase-js");
+const { Pool }   = require("pg");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Configuration (overridable via environment) ─────────────
-const DATA_DIR       = process.env.DATA_DIR    || path.join(__dirname, "data");
-const UPLOADS_DIR    = process.env.UPLOADS_DIR || path.join(__dirname, "uploads");
-const MAX_FILE_SIZE_MB = Number(process.env.MAX_FILE_SIZE_MB || 50);
-const AUTH_RATE_MAX  = Number(process.env.AUTH_RATE_MAX || 20);
-const AUTH_RATE_WINDOW_MS = Number(process.env.AUTH_RATE_WINDOW_SECONDS || 15 * 60) * 1000;
+const SUPABASE_URL              = process.env.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY         = process.env.SUPABASE_ANON_KEY || "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const DATABASE_URL              = process.env.DATABASE_URL || "";
+const STORAGE_BUCKET            = process.env.STORAGE_BUCKET || "uploads";
+const MAX_FILE_SIZE_MB          = Number(process.env.MAX_FILE_SIZE_MB || 15);
+const MAX_FILES                 = Number(process.env.MAX_FILES || 5);
+
+const REQUIRED = { SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY };
+const MISSING  = Object.entries(REQUIRED).filter(([, v]) => !v).map(([k]) => k);
 
 app.set("trust proxy", 1);
 
-// ── SQLite database ─────────────────────────────────────────
-const DB_PATH = path.join(DATA_DIR, "whatapp.db");
-fs.mkdirSync(DATA_DIR, { recursive: true });
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+// ── Supabase admin client (server-side only) ────────────────
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    })
+  : null;
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    username TEXT PRIMARY KEY,
-    password TEXT NOT NULL
-  );
+let ready = false;
+
+// ── Schema bootstrap ────────────────────────────────────────
+// DDL can't go through the Supabase REST client, so we open a
+// short-lived Postgres connection with DATABASE_URL. Optional —
+// if it's missing we assume the tables already exist.
+const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS posts (
-    id        TEXT PRIMARY KEY,
-    text      TEXT DEFAULT '',
-    author    TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    file_name    TEXT,
-    file_original TEXT,
-    file_size    INTEGER,
-    file_mimetype TEXT
+    id         TEXT PRIMARY KEY,
+    text       TEXT NOT NULL DEFAULT '',
+    author     TEXT NOT NULL,
+    author_id  TEXT,
+    timestamp  BIGINT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS post_files (
-    post_id       TEXT NOT NULL,
+    post_id       TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     file_name     TEXT PRIMARY KEY,
     file_original TEXT,
-    file_size     INTEGER,
-    file_mimetype TEXT,
-    FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    file_size     BIGINT,
+    file_mimetype TEXT
   );
-`);
+  CREATE INDEX IF NOT EXISTS post_files_post_id_idx ON post_files(post_id);
+  ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE post_files ENABLE ROW LEVEL SECURITY;
+`;
 
-// Add columns added after the app first shipped (idempotent).
-function addColumnIfMissing(table, column, ddl) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+async function initSchema() {
+  if (!DATABASE_URL) {
+    console.log("   Schema        → skipped (no DATABASE_URL; assuming tables exist)");
+    return;
+  }
+  const pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: DATABASE_URL.includes("sslmode=") ? undefined : { rejectUnauthorized: false }
+  });
+  try {
+    await pool.query(SCHEMA_SQL);
+    console.log("   Schema        → ensured");
+  } finally {
+    await pool.end();
+  }
 }
-addColumnIfMissing("users", "email", "email TEXT");
-addColumnIfMissing("users", "reset_token_hash", "reset_token_hash TEXT");
-addColumnIfMissing("users", "reset_expires", "reset_expires INTEGER");
 
-// Migrate legacy single-file posts into post_files (idempotent).
-db.exec(`
-  INSERT INTO post_files (post_id, file_name, file_original, file_size, file_mimetype)
-  SELECT id, file_name, file_original, file_size, file_mimetype
-  FROM posts
-  WHERE file_name IS NOT NULL
-    AND file_name NOT IN (SELECT file_name FROM post_files);
-`);
+async function ensureBucket() {
+  if (!supabase) return;
+  const { error } = await supabase.storage.createBucket(STORAGE_BUCKET, { public: true });
+  // "already exists" is the expected error on every boot after the first.
+  if (error && !/already exists/i.test(error.message)) throw error;
+  console.log(`   Storage       → bucket "${STORAGE_BUCKET}" ready`);
+}
 
-const insertPost      = db.prepare("INSERT INTO posts (id, text, author, timestamp) VALUES (@id, @text, @author, @timestamp)");
-const insertPostFile  = db.prepare("INSERT INTO post_files (post_id, file_name, file_original, file_size, file_mimetype) VALUES (?, ?, ?, ?, ?)");
-const deletePost      = db.prepare("DELETE FROM posts WHERE id = ?");
-const getPost         = db.prepare("SELECT * FROM posts WHERE id = ?");
-const getAllPosts     = db.prepare("SELECT * FROM posts ORDER BY timestamp ASC");
-const getFilesForPost = db.prepare("SELECT * FROM post_files WHERE post_id = ?");
-const getAllFiles     = db.prepare("SELECT * FROM post_files ORDER BY post_id, rowid");
-const insertUser      = db.prepare("INSERT INTO users (username, password, email) VALUES (?, ?, ?)");
-const getUser         = db.prepare("SELECT * FROM users WHERE username = ?");
-const getUserByReset  = db.prepare("SELECT * FROM users WHERE reset_token_hash = ?");
-const setResetToken   = db.prepare("UPDATE users SET reset_token_hash = ?, reset_expires = ? WHERE username = ?");
-const clearResetToken = db.prepare("UPDATE users SET reset_token_hash = NULL, reset_expires = NULL WHERE username = ?");
-const setPassword     = db.prepare("UPDATE users SET password = ? WHERE username = ?");
-
-// ── Uploads directory ─────────────────────────────────────────
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-// ── Multer config ─────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
-  filename:    (req, file, cb) => cb(null, crypto.randomUUID() + path.extname(file.originalname))
-});
+// ── Multer config (in-memory; files stream straight to Storage) ─
 const upload = multer({
-  storage,
-  limits: { fileSize: MAX_FILE_SIZE_MB * 1024 * 1024, files: 10 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE_MB * 1024 * 1024, files: MAX_FILES },
   fileFilter: (req, file, cb) => {
     const allowed = /\.(png|jpe?g|gif|webp|pdf|txt|md|csv|json|js|ts|py|html|css|mp3|wav|ogg|m4a|mp4|webm|zip)$/i;
     if (allowed.test(path.extname(file.originalname))) {
@@ -103,7 +94,7 @@ const upload = multer({
   }
 });
 
-// ── Middleware ────────────────────────────────────────────────
+// ── Middleware ──────────────────────────────────────────────
 app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -111,43 +102,51 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Content-Security-Policy",
     "default-src 'self'; " +
-    "script-src 'self'; " +
+    "script-src 'self' https://cdn.jsdelivr.net; " +
     "style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data: blob:; " +
-    "media-src 'self' blob:; " +
-    "connect-src 'self'; " +
+    "img-src 'self' data: blob: https://*.supabase.co; " +
+    "media-src 'self' blob: https://*.supabase.co; " +
+    "connect-src 'self' https://*.supabase.co; " +
     "object-src 'none'; " +
     "frame-ancestors 'none'");
   next();
 });
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
-app.use(session({
-  secret:            SESSION_SECRET,
-  resave:            true,
-  saveUninitialized: true,
-  cookie: { httpOnly: true, sameSite: "lax", maxAge: 24 * 60 * 60 * 1000 }
-}));
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(UPLOADS_DIR));
+
+// Public client config — the browser only ever sees the anon key.
+app.get("/config.js", (req, res) => {
+  res.type("application/javascript");
+  res.send(
+    `window.SUPABASE_URL=${JSON.stringify(SUPABASE_URL)};` +
+    `window.SUPABASE_ANON_KEY=${JSON.stringify(SUPABASE_ANON_KEY)};`
+  );
+});
 
 // ── Auth helpers ──────────────────────────────────────────────
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const key  = crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
-  return `${salt}:${key}`;
+function displayName(user) {
+  const md = user.user_metadata || {};
+  const raw = md.display_name || md.username || (user.email || "").split("@")[0] || "user";
+  return String(raw).trim().slice(0, 40) || "user";
 }
 
-function verifyPassword(password, stored) {
-  const [salt, key] = stored.split(":");
-  const derived = crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
-  return derived === key;
+function bearerToken(req) {
+  const header = req.headers.authorization || "";
+  if (header.startsWith("Bearer ")) return header.slice(7).trim();
+  if (typeof req.query.token === "string") return req.query.token;
+  return "";
 }
 
-function requireAuth(req, res, next) {
-  if (!req.session || !req.session.userId) {
+async function requireAuth(req, res, next) {
+  if (!ready) return res.status(503).json({ error: "Server is not configured yet." });
+  const token = bearerToken(req);
+  if (!token) return res.status(401).json({ error: "Authentication required." });
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data || !data.user) {
     return res.status(401).json({ error: "Authentication required." });
   }
+  req.user   = data.user;
+  req.author = displayName(data.user);
   next();
 }
 
@@ -176,155 +175,60 @@ function rateLimit({ windowMs, max }) {
     next();
   };
 }
-const authLimiter = rateLimit({ windowMs: AUTH_RATE_WINDOW_MS, max: AUTH_RATE_MAX });
+const postLimiter = rateLimit({ windowMs: 60 * 1000, max: 30 });
 
-// ── Password reset helpers ──────────────────────────────────
-const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
-
-async function sendEmail(to, subject, text) {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) return false;
-  const from = process.env.RESEND_FROM || "Whatapp <onboarding@resend.dev>";
-  try {
-    const res = await fetch("https://api.resend.com/emails", {
-      method:  "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body:    JSON.stringify({ from, to, subject, text })
-    });
-    return res.ok;
-  } catch (_) {
-    return false;
-  }
+// ── Storage helpers ───────────────────────────────────────────
+function publicUrl(name) {
+  return supabase.storage.from(STORAGE_BUCKET).getPublicUrl(name).data.publicUrl;
 }
-
-// ── Auth routes ───────────────────────────────────────────────
-app.post("/api/register", authLimiter, (req, res) => {
-  const { username, password, email } = req.body || {};
-  if (!username || !password) {
-    return res.status(400).json({ error: "Username and password are required." });
-  }
-  const name = username.trim().toLowerCase();
-  if (name.length < 2 || name.length > 20) {
-    return res.status(400).json({ error: "Username must be 2–20 characters." });
-  }
-  if (password.length < 4) {
-    return res.status(400).json({ error: "Password must be at least 4 characters." });
-  }
-  const mail = (email || "").trim().toLowerCase();
-  if (mail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) {
-    return res.status(400).json({ error: "Invalid email address." });
-  }
-
-  const existing = getUser.get(name);
-  if (existing) {
-    return res.status(409).json({ error: "Username already taken." });
-  }
-
-  try {
-    insertUser.run(name, hashPassword(password), mail || null);
-  } catch (err) {
-    return res.status(500).json({ error: "Failed to create account." });
-  }
-
-  req.session.userId   = name;
-  req.session.username = name;
-  res.status(201).json({ username: name });
-});
-
-app.post("/api/login", authLimiter, (req, res) => {
-  const { username, password } = req.body || {};
-  const name = (username || "").trim().toLowerCase();
-
-  const user = getUser.get(name);
-  if (!user || !verifyPassword(password, user.password)) {
-    return res.status(401).json({ error: "Invalid username or password." });
-  }
-
-  req.session.userId   = name;
-  req.session.username = name;
-  res.json({ username: name });
-});
-
-app.post("/api/logout", (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
-});
-
-// ── Password reset ───────────────────────────────────────────
-app.post("/api/reset/request", authLimiter, async (req, res) => {
-  const username = ((req.body || {}).username || "").trim().toLowerCase();
-  const user = getUser.get(username);
-
-  // Always respond ok — never reveal which usernames exist.
-  if (user && user.email) {
-    const token = crypto.randomBytes(32).toString("hex");
-    setResetToken.run(sha256(token), Date.now() + 60 * 60 * 1000, username);
-    const link = `${req.protocol}://${req.get("host")}/?reset=${token}`;
-    const sent = await sendEmail(
-      user.email,
-      "Whatapp — reset your password",
-      `Use this link to set a new password (valid for 60 minutes):\n\n${link}\n\nIf you didn't request this, you can ignore this email.`
-    );
-    if (!sent) console.log(`\n[password reset] ${link}\n`);
-  }
-
-  res.json({ ok: true });
-});
-
-app.post("/api/reset/confirm", (req, res) => {
-  const { token, newPassword } = req.body || {};
-  if (!token || !newPassword) {
-    return res.status(400).json({ error: "Reset token and new password are required." });
-  }
-  if (newPassword.length < 4) {
-    return res.status(400).json({ error: "Password must be at least 4 characters." });
-  }
-  const user = getUserByReset.get(sha256(token));
-  if (!user || !user.reset_expires || user.reset_expires < Date.now()) {
-    return res.status(400).json({ error: "Reset link is invalid or expired." });
-  }
-  setPassword.run(hashPassword(newPassword), user.username);
-  clearResetToken.run(user.username);
-  res.json({ ok: true });
-});
-
-app.get("/api/me", (req, res) => {
-  if (!req.session || !req.session.userId) {
-    return res.json({ user: null });
-  }
-  res.json({ user: { username: req.session.username } });
-});
 
 // ── Post helpers ──────────────────────────────────────────────
 function rowToPost(row, files = []) {
-  const post = {
+  return {
     id:        row.id,
     text:      row.text,
     author:    row.author,
+    authorId:  row.author_id,
     timestamp: row.timestamp,
     files:     files.map(f => ({
       filename: f.file_name,
       original: f.file_original,
       size:     f.file_size,
-      mimetype: f.file_mimetype
+      mimetype: f.file_mimetype,
+      url:      publicUrl(f.file_name)
     }))
   };
-  return post;
+}
+
+async function fetchFilesByPost() {
+  const { data, error } = await supabase.from("post_files").select("*");
+  if (error) throw error;
+  const byId = new Map();
+  for (const f of data) {
+    const list = byId.get(f.post_id) || [];
+    list.push(f);
+    byId.set(f.post_id, list);
+  }
+  return byId;
 }
 
 // ── GET /api/posts ────────────────────────────────────────────
-app.get("/api/posts", requireAuth, (req, res) => {
-  const rows = getAllPosts.all();
-  const filesById = new Map();
-  for (const f of getAllFiles.all()) {
-    const list = filesById.get(f.post_id) || [];
-    list.push(f);
-    filesById.set(f.post_id, list);
+app.get("/api/posts", requireAuth, async (req, res) => {
+  try {
+    const [{ data: rows, error: postErr }, filesById] = await Promise.all([
+      supabase.from("posts").select("*").order("timestamp", { ascending: true }),
+      fetchFilesByPost()
+    ]);
+    if (postErr) throw postErr;
+    res.json(rows.map(row => rowToPost(row, filesById.get(row.id) || [])));
+  } catch (err) {
+    console.error("GET /api/posts failed:", err.message);
+    res.status(500).json({ error: "Failed to load posts." });
   }
-  res.json(rows.map(row => rowToPost(row, filesById.get(row.id) || [])));
 });
 
 // ── POST /api/posts ───────────────────────────────────────────
-app.post("/api/posts", requireAuth, upload.array("files", 10), (req, res) => {
+app.post("/api/posts", postLimiter, requireAuth, upload.array("files", MAX_FILES), async (req, res) => {
   const text  = (req.body.text || "").trim();
   const files = req.files || [];
 
@@ -335,60 +239,90 @@ app.post("/api/posts", requireAuth, upload.array("files", 10), (req, res) => {
     return res.status(400).json({ error: "Post text must be 500 characters or fewer." });
   }
 
-  const newPost = {
-    id:        crypto.randomUUID(),
-    text:      text,
-    author:    req.session.username,
-    timestamp: Date.now(),
-    files:     files.map(f => ({
-      filename: f.filename,
-      original: f.originalname,
-      size:     f.size,
-      mimetype: f.mimetype
-    }))
-  };
+  const id        = crypto.randomUUID();
+  const timestamp = Date.now();
+  const uploaded  = [];
 
   try {
-    insertPost.run({
-      id:        newPost.id,
-      text:      newPost.text,
-      author:    newPost.author,
-      timestamp: newPost.timestamp
-    });
+    // 1. Upload every attachment to Supabase Storage.
     for (const f of files) {
-      insertPostFile.run(newPost.id, f.filename, f.originalname, f.size, f.mimetype);
+      const name = crypto.randomUUID() + path.extname(f.originalname).toLowerCase();
+      const { error } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(name, f.buffer, { contentType: f.mimetype, upsert: false });
+      if (error) throw error;
+      uploaded.push({ name, original: f.originalname, size: f.size, mimetype: f.mimetype });
     }
-  } catch (err) {
-    for (const f of files) {
-      try { fs.unlinkSync(path.join(UPLOADS_DIR, f.filename)); } catch (_) {}
-    }
-    return res.status(500).json({ error: "Failed to save post." });
-  }
 
-  broadcast("post-created", newPost);
-  res.status(201).json(newPost);
+    // 2. Insert the post row.
+    const { error: postErr } = await supabase.from("posts").insert({
+      id,
+      text,
+      author:    req.author,
+      author_id: req.user.id,
+      timestamp
+    });
+    if (postErr) throw postErr;
+
+    // 3. Insert the file rows.
+    if (uploaded.length) {
+      const { error: fileErr } = await supabase.from("post_files").insert(
+        uploaded.map(u => ({
+          post_id:       id,
+          file_name:     u.name,
+          file_original: u.original,
+          file_size:     u.size,
+          file_mimetype: u.mimetype
+        }))
+      );
+      if (fileErr) throw fileErr;
+    }
+
+    const newPost = {
+      id,
+      text,
+      author:    req.author,
+      authorId:  req.user.id,
+      timestamp,
+      files:     uploaded.map(u => ({
+        filename: u.name,
+        original: u.original,
+        size:     u.size,
+        mimetype: u.mimetype,
+        url:      publicUrl(u.name)
+      }))
+    };
+
+    broadcast("post-created", newPost);
+    res.status(201).json(newPost);
+
+  } catch (err) {
+    console.error("POST /api/posts failed:", err.message);
+    if (uploaded.length) {
+      try { await supabase.storage.from(STORAGE_BUCKET).remove(uploaded.map(u => u.name)); } catch (_) {}
+    }
+    res.status(500).json({ error: "Failed to save post." });
+  }
 });
 
 // ── DELETE /api/posts/:id ─────────────────────────────────────
-app.delete("/api/posts/:id", requireAuth, (req, res) => {
+app.delete("/api/posts/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
-  const row = getPost.get(id);
-  if (!row) {
-    return res.status(404).json({ error: "Post not found." });
-  }
-  if (row.author !== req.session.username) {
+
+  const { data: row, error: getErr } = await supabase.from("posts").select("*").eq("id", id).maybeSingle();
+  if (getErr) return res.status(500).json({ error: "Failed to delete post." });
+  if (!row)   return res.status(404).json({ error: "Post not found." });
+  if (row.author_id && row.author_id !== req.user.id) {
     return res.status(403).json({ error: "You can only erase your own posts." });
   }
 
-  const files = getFilesForPost.all(id);
-  try {
-    deletePost.run(id);
-  } catch (err) {
-    return res.status(500).json({ error: "Failed to delete post." });
-  }
+  const { data: files } = await supabase.from("post_files").select("*").eq("post_id", id);
 
-  for (const f of files) {
-    try { fs.unlinkSync(path.join(UPLOADS_DIR, f.file_name)); } catch (_) {}
+  const { error: delErr } = await supabase.from("posts").delete().eq("id", id);
+  if (delErr) return res.status(500).json({ error: "Failed to delete post." });
+
+  if (files && files.length) {
+    try { await supabase.storage.from(STORAGE_BUCKET).remove(files.map(f => f.file_name)); } catch (_) {}
   }
 
   broadcast("post-deleted", { id });
@@ -448,7 +382,24 @@ app.use((err, req, res, next) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n✦  Whatapp running → http://localhost:${PORT}`);
-  console.log(`   Database          → ${DB_PATH}\n`);
-});
+async function main() {
+  if (MISSING.length) {
+    console.warn(`\n⚠  Missing environment variables: ${MISSING.join(", ")}`);
+    console.warn("   The UI will load, but the API returns 503 until they are set.\n");
+  } else {
+    try {
+      await initSchema();
+      await ensureBucket();
+      ready = true;
+    } catch (err) {
+      console.error(`\n⚠  Startup check failed: ${err.message}\n`);
+    }
+  }
+
+  app.listen(PORT, () => {
+    console.log(`\n✦  Whatapp running → http://localhost:${PORT}`);
+    console.log(`   Backend       → Supabase ${SUPABASE_URL ? "configured" : "(not configured)"}\n`);
+  });
+}
+
+main();

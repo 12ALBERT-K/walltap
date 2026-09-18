@@ -807,7 +807,8 @@
     <div class="auth-logo" aria-hidden="true">W</div>
     <h2>Whatapp</h2>
     <p id="auth-subtitle">Sign in or create an account</p>
-    <input type="text"     id="auth-username" placeholder="Username" autocomplete="username" maxlength="20" />
+    <input type="text"     id="auth-display" class="hidden" placeholder="Display name (optional)" autocomplete="nickname" maxlength="40" />
+    <input type="email"    id="auth-email" placeholder="Email" autocomplete="email" />
     <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password" />
     <button id="auth-btn">Sign in</button>
     <div class="auth-error" id="auth-error"></div>
@@ -815,14 +816,17 @@
     <div class="auth-forgot" id="auth-forgot">Forgot password?</div>
 
     <div id="reset-panel" class="hidden">
-      <p class="auth-note" id="reset-note">Enter your username and we'll send a reset link to the email on the account.</p>
-      <input type="text" id="reset-username" placeholder="Username" autocomplete="username" maxlength="20" />
-      <button id="reset-request-btn">Send reset link</button>
+      <p class="auth-note" id="reset-note">Enter your email and we'll send a reset link.</p>
+      <div id="reset-request-group">
+        <input type="email" id="reset-email" placeholder="Email" autocomplete="email" />
+        <button id="reset-request-btn">Send reset link</button>
+      </div>
+      <div id="recovery-panel" class="hidden">
+        <input type="password" id="recovery-new-pass" placeholder="New password" autocomplete="new-password" />
+        <input type="password" id="recovery-confirm-pass" placeholder="Confirm new password" autocomplete="new-password" />
+        <button id="recovery-confirm-btn">Set new password</button>
+      </div>
       <div class="auth-error" id="reset-error"></div>
-      <div class="auth-or" id="reset-or">──────── have a link? ────────</div>
-      <input type="password" id="reset-new-pass" placeholder="New password" autocomplete="new-password" />
-      <input type="password" id="reset-confirm-pass" placeholder="Confirm new password" autocomplete="new-password" />
-      <button id="reset-confirm-btn">Set new password</button>
       <div class="auth-toggle" id="reset-back">Back to sign in</div>
     </div>
   </div>
@@ -831,6 +835,9 @@
 <!-- Toast notification for errors -->
 <div id="toast"></div>
 
+<!-- Runtime config (Supabase URL + anon key) and Supabase client -->
+<script src="/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <!-- Frontend logic -->
 <script src="app.js"></script>
 </body>

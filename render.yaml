@@ -2,23 +2,24 @@ services:
   - type: web
     name: whatapp
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm ci
     startCommand: npm start
-    disk:
-      name: whatapp-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_VERSION
         value: 20
-      - key: DATA_DIR
-        value: /var/data
-      - key: UPLOADS_DIR
-        value: /var/data/uploads
-      - key: SESSION_SECRET
-        generateValue: true
-      - key: MAX_FILE_SIZE_MB
-        value: 50
-      - key: RESEND_API_KEY
+      # Supabase project settings (Project Settings → API)
+      - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Supabase Postgres connection string (Project Settings → Database → Connection pooling)
+      - key: DATABASE_URL
+        sync: false
+      # Optional upload limits
+      - key: MAX_FILE_SIZE_MB
+        value: 15
+      - key: MAX_FILES
+        value: 5
