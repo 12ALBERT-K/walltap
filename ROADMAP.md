@@ -45,19 +45,23 @@ app's browser clients for call media.
       `message_deleted` (server) and `page_view` (client).
 - [x] Storage bucket forced to **private** on every boot; files served via
       `createSignedUrl` (`SIGNED_URL_TTL_SECONDS`, default 7 days).
-- [x] `scripts/provision-admin.js` — creates/upgrades an admin account in one
-      command: `npm run provision-admin`.
+- [x] `scripts/provision-admin.js` — creates a dedicated admin account in one
+      command: `npm run provision-admin`. Refuses to promote an existing
+      regular account (Phase 2 §2.2: admin ≠ regular user).
+- [x] **Realtime (was §1.6):** SSE removed. Server + browser now share a
+      Supabase Realtime **broadcast** channel (`board`), gated by RLS policies
+      on `realtime.messages`. Phase 3 calls can reuse this transport.
+- [x] **Soft delete:** posts now set `deleted_at`/`hidden_from_user` instead of
+      hard-deleting. Feeds (and the `posts readable` RLS policy) hide them;
+      `list-all-messages` still returns them, with a "deleted" badge, for the
+      moderation view.
+- [x] **Privacy disclosure:** the chat app footer carries the retention clause
+      ("erased messages may be retained for moderation and safety purposes").
 
 ### Remaining / decisions
 - [ ] Backfill `profiles` for auth users created *before* the trigger
       (one-time SQL or `netlify`-side `on conflict do nothing`; new signups and
       admin provisioning are already handled by the trigger + script).
-- [ ] **Realtime §1.6:** still custom SSE. Optional swap to Supabase Realtime
-      (Postgres changes or broadcast channels) — recommended before Phase 3 so
-      calls reuse the same transport.
-- [ ] **Soft delete:** posts are currently hard-deleted. If moderation retention
-      is wanted (Phase 2 "hidden messages"), migrate to `deleted_at` +
-      `hidden_from_user` per the original roadmap.
 - [ ] Table hardening: consider `CHECK` on `text` length (currently enforced in
       route only) and a `CHECK` on `posts.timestamp` for sanity.
 
@@ -87,10 +91,11 @@ deployed on Netlify).
 - [ ] Set Netlify env vars: `SUPABASE_URL`, `SUPABASE_ANON_KEY` (frontend),
       `SUPABASE_SERVICE_ROLE_KEY` (functions only, never in frontend)
 - [x] Grant your account `is_admin = true` in `profiles`
-      (done via `npm run provision-admin` in the chat app repo)
+      (done via `npm run provision-admin` in the chat app repo — uses a
+      *separate* admin email, never a regular user's account)
 - [ ] (Optional) charting library / more analysis; admin UI polish
-- [ ] Add retention clause to privacy policy / ToS: "deleted content may be
-      retained for moderation and safety purposes."
+- [x] Add retention clause to privacy policy / ToS: "deleted content may be
+      retained for moderation and safety purposes." (shown in the chat app footer)
 
 ---
 

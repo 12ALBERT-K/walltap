@@ -183,7 +183,7 @@
       flex-direction: column;
     }
 
-    .date-chip {
+.date-chip {
       align-self: center;
       background: rgba(7,54,66,0.92);
       color: var(--base1);
@@ -194,6 +194,16 @@
       box-shadow: 0 1px 1px rgba(11,20,26,0.13);
       margin: 0.6rem 0;
       user-select: none;
+    }
+
+    .board-footer {
+      margin: 0 auto;
+      max-width: 760px;
+      padding: 0.9rem 1rem calc(var(--tray-h) + 1rem);
+      color: var(--text-sub);
+      font-size: 0.72rem;
+      line-height: 1.5;
+      text-align: center;
     }
 
     /* Empty-state */
@@ -765,7 +775,7 @@
     </button>
   </header>
 
-  <!--
+<!--
     FEED � app.js injects a new <section class="post"> here
     for every post it receives from GET /api/posts, and for
     each new post created via the compose form.
@@ -776,6 +786,12 @@
       The board is clean. Write the first thing.
     </div>
   </main>
+
+  <!-- Privacy disclosure � retention for moderation / safety -->
+  <footer class="board-footer">
+    Messages you erase are hidden from the board but may be retained by Walltap
+    for moderation and safety purposes.
+  </footer>
 
 </div><!-- /.board -->
 

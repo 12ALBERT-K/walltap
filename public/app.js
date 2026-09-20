@@ -58,7 +58,7 @@ let currentUser = null;      // display name
 let currentUserId = null;    // Supabase auth user id
 let accessToken = null;      // current Supabase access token
 let isLogin     = true;
-let sse         = null;
+let realtime    = null;
 let attachments = [];
 let recorder    = null;
 let recChunks   = [];
@@ -718,7 +718,7 @@ function enterApp() {
   authOverlay.classList.add("hidden");
   headerUser.textContent = currentUser || "";
   loadPosts();
-  connectSSE();
+  connectRealtime();
   logEvent("page_view");
 }
 
@@ -792,7 +792,7 @@ async function handleAuth() {
 
 async function handleLogout() {
   try { if (supabase) await supabase.auth.signOut(); } catch (_) {}
-  if (sse) sse.close();
+  if (realtime) realtime.unsubscribe();
   location.reload();
 }
 
@@ -845,30 +845,34 @@ async function handleRecoveryConfirm() {
 }
 
 
-// ── SSE — real-time updates ──────────────────────────────────
-function connectSSE() {
-  if (!accessToken) return;
-  if (sse) sse.close();
-  sse = new EventSource("/api/events?token=" + encodeURIComponent(accessToken));
-
-  sse.addEventListener("post-created", e => {
-    const post = JSON.parse(e.data);
-    if (localIds.has(post.id)) { localIds.delete(post.id); return; }
-    if (feed.querySelector(`[data-id="${post.id}"]`)) return;
-    const section = createPostElement(post);
-    appendPost(section);
-  });
-
-  sse.addEventListener("post-deleted", e => {
-    const { id } = JSON.parse(e.data);
-    if (localIds.has(id)) { localIds.delete(id); return; }
-    const section = feed.querySelector(`[data-id="${id}"]`);
-    if (!section) return;
-    section.classList.add("erasing");
-    setTimeout(() => { section.remove(); syncEmptyState(); }, 230);
-  });
-
-  sse.addEventListener("error", () => {});
+// ── Realtime — live updates via Supabase Realtime broadcast on
+// the shared "board" channel (event parity with the old SSE stream).
+// The server broadcasts post-created / post-deleted with the full
+// post payload (already signed file URLs); the channel is private so
+// the realtime.messages RLS policies apply (see server.js SCHEMA_SQL).
+function connectRealtime() {
+  if (!supabase || !accessToken) return;
+  if (realtime) realtime.unsubscribe();
+  supabase.realtime.setAuth(accessToken);
+  realtime = supabase
+    .channel("board", { config: { private: true } })
+    .on("broadcast", { event: "post-created" }, ({ payload }) => {
+      if (localIds.has(payload.id)) { localIds.delete(payload.id); return; }
+      if (feed.querySelector(`[data-id="${payload.id}"]`)) return;
+      const section = createPostElement(payload);
+      appendPost(section);
+    })
+    .on("broadcast", { event: "post-deleted" }, ({ payload }) => {
+      if (localIds.has(payload.id)) { localIds.delete(payload.id); return; }
+      const section = feed.querySelector(`[data-id="${payload.id}"]`);
+      if (!section) return;
+      section.classList.add("erasing");
+      setTimeout(() => { section.remove(); syncEmptyState(); }, 230);
+    })
+    .subscribe((status) => {
+      if (status === "CHANNEL_ERROR") console.error("Realtime channel error.");
+      if (status === "CLOSED") console.warn("Realtime channel closed.");
+    });
 }
 
 // Keep our cached token/identity fresh as Supabase refreshes sessions.

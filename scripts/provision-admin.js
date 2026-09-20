@@ -80,15 +80,18 @@ async function main() {
   });
   if (createErr) {
     if (/already registered|already exists/i.test(createErr.message)) {
-      console.log(`User ${email} already exists — upgrading it to admin.`);
-      const { data: byEmail, error: findErr } = await supabase.auth.admin.listUsers();
-      if (findErr) throw findErr;
-      const existing = byEmail.users.find((u) => u.email === email);
-      if (!existing) throw new Error("Could not locate the existing user.");
-      userId = existing.id;
-    } else {
-      throw createErr;
+      // Deliberately refuse to promote an existing account: a regular user must
+      // never double as the admin account (see ROADMAP Phase 2 §2.2). Use a
+      // separate email that isn't already in use by a real user.
+      console.error(
+        `\n${email} already exists.\n` +
+        `Refusing to upgrade it to admin — a regular user account must not double as\n` +
+        `the admin account. Create a dedicated admin email (e.g. admin@yoursite.com)\n` +
+        `and run this script again with that address.\n`
+      );
+      process.exit(1);
     }
+    throw createErr;
   } else {
     userId = created.user.id;
     console.log(`Created user ${email}.`);

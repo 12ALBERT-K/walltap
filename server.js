@@ -45,6 +45,10 @@ const SCHEMA_SQL = `
     author_id  TEXT,
     timestamp  BIGINT NOT NULL
   );
+  -- Soft delete: deleted posts stay in the DB (moderation retention) but are
+  -- hidden from feeds and clients. Only the admin view reads them.
+  ALTER TABLE posts ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+  ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_from_user boolean NOT NULL DEFAULT false;
   CREATE TABLE IF NOT EXISTS post_files (
     post_id       TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     file_name     TEXT PRIMARY KEY,
@@ -111,22 +115,34 @@ const SCHEMA_SQL = `
     JOIN auth.users u ON u.id = p.id;
 
   -- RLS policies (defense in depth; the server itself uses the service role).
-  -- No IF NOT EXISTS here — guarded via pg_policies so the block is idempotent.
+  -- posts policies are DROP+CREATE so definition changes (e.g. soft-delete
+  -- visibility) apply on every boot without manual migration.
+  DROP POLICY IF EXISTS "posts readable by authenticated" ON posts;
+  CREATE POLICY "posts readable by authenticated" ON posts FOR SELECT USING (auth.role() = 'authenticated' AND deleted_at IS NULL);
+  DROP POLICY IF EXISTS "posts insert own" ON posts;
+  CREATE POLICY "posts insert own" ON posts FOR INSERT WITH CHECK (author_id IS NULL OR auth.uid() = author_id::uuid);
+  DROP POLICY IF EXISTS "posts update own" ON posts;
+  CREATE POLICY "posts update own" ON posts FOR UPDATE USING (auth.uid() = author_id::uuid);
+  DROP POLICY IF EXISTS "posts delete own" ON posts;
+  CREATE POLICY "posts delete own" ON posts FOR DELETE USING (auth.uid() = author_id::uuid);
+
+  -- Realtime broadcast authorization: any signed-in user may join the "board"
+  -- channel and receive (and send) broadcast messages on it.
+  -- (Required because Realtime Authorization is enforced by default; the client
+  --  joins with private:true so these RLS policies are the gate.)
   DO $$
   BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts readable by authenticated') THEN
-      CREATE POLICY "posts readable by authenticated" ON posts FOR SELECT USING (auth.role() = 'authenticated');
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='realtime' AND tablename='messages' AND policyname='authenticated can receive broadcasts') THEN
+      CREATE POLICY "authenticated can receive broadcasts" ON realtime.messages FOR SELECT TO authenticated USING (true);
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts insert own') THEN
-      CREATE POLICY "posts insert own" ON posts FOR INSERT WITH CHECK (author_id IS NULL OR auth.uid() = author_id::uuid);
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='realtime' AND tablename='messages' AND policyname='authenticated can send broadcasts') THEN
+      CREATE POLICY "authenticated can send broadcasts" ON realtime.messages FOR INSERT TO authenticated WITH CHECK (true);
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts update own') THEN
-      CREATE POLICY "posts update own" ON posts FOR UPDATE USING (auth.uid() = author_id::uuid);
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts delete own') THEN
-      CREATE POLICY "posts delete own" ON posts FOR DELETE USING (auth.uid() = author_id::uuid);
-    END IF;
+  END
+  $$;
 
+  DO $$
+  BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='post_files' AND policyname='post_files readable by authenticated') THEN
       CREATE POLICY "post_files readable by authenticated" ON post_files FOR SELECT USING (auth.role() = 'authenticated');
     END IF;
@@ -205,7 +221,7 @@ app.use((req, res, next) => {
     "style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data: blob: https://*.supabase.co; " +
     "media-src 'self' blob: https://*.supabase.co; " +
-    "connect-src 'self' https://*.supabase.co; " +
+    "connect-src 'self' https://*.supabase.co wss://*.supabase.co; " +
     "object-src 'none'; " +
     "frame-ancestors 'none'");
   next();
@@ -330,7 +346,7 @@ async function fetchFilesByPost() {
 app.get("/api/posts", requireAuth, async (req, res) => {
   try {
     const [{ data: rows, error: postErr }, filesById] = await Promise.all([
-      supabase.from("posts").select("*").order("timestamp", { ascending: true }),
+      supabase.from("posts").select("*").is("deleted_at", null).order("timestamp", { ascending: true }),
       fetchFilesByPost()
     ]);
     if (postErr) throw postErr;
@@ -437,56 +453,39 @@ app.delete("/api/posts/:id", requireAuth, async (req, res) => {
     return res.status(403).json({ error: "You can only erase your own posts." });
   }
 
-  const { data: files } = await supabase.from("post_files").select("*").eq("post_id", id);
+  const { error: softErr } = await supabase
+    .from("posts")
+    .update({ deleted_at: new Date().toISOString(), hidden_from_user: true })
+    .eq("id", id);
+  if (softErr) return res.status(500).json({ error: "Failed to delete post." });
 
-  const { error: delErr } = await supabase.from("posts").delete().eq("id", id);
-  if (delErr) return res.status(500).json({ error: "Failed to delete post." });
-
-  if (files && files.length) {
-    try { await supabase.storage.from(STORAGE_BUCKET).remove(files.map(f => f.file_name)); } catch (_) {}
-  }
-
-  logEvent("message_deleted", req.user.id, { id });
+  logEvent("message_deleted", req.user.id, { id, soft: true });
   broadcast("post-deleted", { id });
   res.status(204).end();
 });
 
-// ── SSE ───────────────────────────────────────────────────────
-const sseClients = [];
+// ── Realtime broadcast (replaces SSE) ─────────────────────────
+// The server (service-role client) broadcasts on a shared "board" channel;
+// every signed-in browser subscribes to the same channel with private:true,
+// so the realtime.messages RLS policies (see SCHEMA_SQL) gate access.
+let boardChannel = null;
+let boardReady   = false;
 
-function broadcast(event, data) {
-  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  sseClients.forEach(res => {
-    try { res.write(msg); } catch (_) { }
-  });
-  sseClients.slice().forEach(res => {
-    if (res.destroyed || res.closed) {
-      const idx = sseClients.indexOf(res);
-      if (idx !== -1) sseClients.splice(idx, 1);
-    }
+function connectRealtime() {
+  if (!supabase) return;
+  boardChannel = supabase.channel("board");
+  boardChannel.subscribe((status) => {
+    boardReady = status === "SUBSCRIBED";
+    if (!boardReady) console.warn("Realtime channel subscribed:", status);
   });
 }
 
-const ssePing = setInterval(() => {
-  sseClients.forEach(res => {
-    try { res.write(":ping\n\n"); } catch (_) { }
-  });
-}, 30000);
-
-app.get("/api/events", requireAuth, (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  res.write(":connected\n\n");
-  sseClients.push(res);
-
-  req.on("close", () => {
-    const idx = sseClients.indexOf(res);
-    if (idx !== -1) sseClients.splice(idx, 1);
-  });
-});
+function broadcast(event, data) {
+  if (!boardReady || !boardChannel) return;
+  try {
+    boardChannel.send({ type: "broadcast", event, payload: data });
+  } catch (_) {}
+}
 
 // ── Error handler ─────────────────────────────────────────────
 app.use((err, req, res, next) => {
@@ -512,6 +511,7 @@ async function main() {
     try {
       await initSchema();
       await ensureBucket();
+      connectRealtime();
       ready = true;
     } catch (err) {
       console.error(`\n⚠  Startup check failed: ${err.message}\n`);
