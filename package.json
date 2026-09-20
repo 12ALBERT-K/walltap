@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "npx nodemon server.js",
-    "provision-admin": "node scripts/provision-admin.js"
+    "provision-admin": "node scripts/provision-admin.js",
+    "backfill-profiles": "node scripts/backfill-profiles.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

@@ -746,6 +746,184 @@
     }
     .hidden { display: none !important; }
 
+    /* -- CALLS: online presence bar -------------------------- */
+    .online-bar {
+      position: sticky;
+      top: 58px;
+      z-index: 45;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      width: 100%;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 0.5rem 1rem;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--border);
+      background: rgba(7, 54, 66, 0.85);
+      backdrop-filter: blur(4px);
+    }
+    .online-bar.hidden-bar { display: none; }
+    .online-label {
+      flex-shrink: 0;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-sub);
+    }
+    .online-list { display: flex; gap: 0.4rem; align-items: center; }
+    .online-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-shrink: 0;
+      background: var(--base02);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.22rem 0.6rem 0.22rem 0.4rem;
+      color: var(--text-main);
+      font-size: 0.78rem;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
+    }
+    .online-chip:hover {
+      border-color: var(--green);
+      background: rgba(133, 153, 0, 0.12);
+      color: var(--green);
+    }
+    .online-chip .pdot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+    .online-chip .call-ic { flex-shrink: 0; display: inline-flex; opacity: 0.85; }
+    .online-chip .call-ic svg { width: 13px; height: 13px; }
+
+    /* -- CALLS: overlays ------------------------------------- */
+    .call-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 500;
+      background: rgba(0, 43, 54, 0.85);
+      backdrop-filter: blur(3px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .call-overlay.hidden-call { display: none; }
+
+    .incoming-box { text-align: center; max-width: 360px; }
+    .ring-avatar {
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      background: var(--green);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 1rem;
+      font-size: 2.4rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .incoming-box h2 { color: var(--base1); font-size: 1.3rem; margin-bottom: 0.2rem; }
+    .incoming-box p  { color: var(--text-sub); font-size: 0.9rem; margin-bottom: 1.8rem; }
+    .incoming-actions { display: flex; gap: 1.2rem; justify-content: center; }
+    .incoming-actions button {
+      width: 74px;
+      height: 74px;
+      border-radius: 50%;
+      border: none;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .incoming-actions button:active { transform: scale(0.94); }
+    .incoming-actions button:disabled { opacity: 0.5; cursor: default; }
+    .btn-answer  { background: var(--green); }
+    .btn-decline { background: var(--red); }
+    .incoming-actions svg { width: 30px; height: 30px; }
+
+    .call-panel {
+      width: 100%;
+      max-width: 640px;
+      background: var(--base02);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+    }
+    .call-stage {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #000;
+    }
+    .call-fallback {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--base0);
+      font-size: 0.95rem;
+      text-align: center;
+      padding: 1rem;
+    }
+    .call-stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #call-remote-video { z-index: 1; }
+    #call-local-video {
+      z-index: 2;
+      width: 34%;
+      aspect-ratio: 3 / 4;
+      left: auto;
+      right: 0.6rem;
+      top: 0.6rem;
+      bottom: auto;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-radius: 8px;
+      background: #111b21;
+    }
+    .call-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .call-meta .who   { font-weight: 600; color: var(--base1); font-size: 0.95rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .call-meta .call-state { font-size: 0.8rem; color: var(--text-sub); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .call-controls {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0.9rem;
+      padding: 0.7rem 1rem 0.95rem;
+    }
+    .call-controls button {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      background: var(--base03);
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, color 0.15s, transform 0.1s;
+    }
+    .call-controls button:active { transform: scale(0.94); }
+    .call-controls button.active-toggle { background: var(--yellow); color: #fff; }
+    .call-controls button.hangup { background: var(--red); color: #fff; width: 58px; height: 58px; }
+    .call-controls button.hangup:hover { background: #b02a26; }
+    .call-controls svg { width: 24px; height: 24px; }
+
     /* -- RESPONSIVE ------------------------------------------ */
     @media (max-width: 520px) {
       .post { max-width: 92%; }
@@ -774,6 +952,12 @@
       </svg>
     </button>
   </header>
+
+  <!-- Online presence bar � who's here to call -->
+  <div class="online-bar hidden-bar" id="online-bar">
+    <span class="online-label">Online</span>
+    <div class="online-list" id="online-list"></div>
+  </div>
 
 <!--
     FEED � app.js injects a new <section class="post"> here
@@ -838,6 +1022,71 @@
 
 <!-- Attachment preview � files ready to send with the next post -->
 <div id="attach-preview"></div>
+
+<!-- Incoming call overlay -->
+<div class="call-overlay hidden-call" id="incoming-call">
+  <div class="incoming-box">
+    <div class="ring-avatar" id="incoming-avatar">?</div>
+    <h2 id="incoming-name"></h2>
+    <p>Incoming video call…</p>
+    <div class="incoming-actions">
+      <button class="btn-answer" id="call-accept-btn" title="Answer"
+              aria-label="Answer the call">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18a2 2 0 0 1 2-2.18h3a2 2 0 0 1 2 1.72c.13.9.34 1.78.63 2.63a2 2 0 0 1-.45 2.11l-1.05 1.05a16 16 0 0 0 6 6l1.05-1.05a2 2 0 0 1 2.11-.45c.85.29 1.73.5 2.63.63a2 2 0 0 1 1.72 2z"/>
+        </svg>
+      </button>
+      <button class="btn-decline" id="call-decline-btn" title="Decline"
+              aria-label="Decline the call">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18a2 2 0 0 1 2-2.18h3a2 2 0 0 1 2 1.72c.13.9.34 1.78.63 2.63a2 2 0 0 1-.45 2.11l-1.05 1.05a16 16 0 0 0 6 6l1.05-1.05a2 2 0 0 1 2.11-.45c.85.29 1.73.5 2.63.63a2 2 0 0 1 1.72 2z"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Active call overlay -->
+<div class="call-overlay hidden-call" id="active-call">
+  <div class="call-panel">
+    <div class="call-stage">
+      <div class="call-fallback" id="call-fallback">Connecting…</div>
+      <video id="call-local-video" autoplay muted playsinline></video>
+      <video id="call-remote-video" autoplay playsinline></video>
+    </div>
+    <div class="call-meta">
+      <span class="who" id="call-peer-name"></span>
+      <span class="call-state" id="call-state"></span>
+    </div>
+    <div class="call-controls">
+      <button id="call-mute-btn" title="Mute / unmute microphone"
+              aria-label="Toggle microphone">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <button id="call-cam-btn" title="Camera on / off"
+              aria-label="Toggle camera">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m22 8-6 4 6 4V8z"/>
+          <rect x="2" y="6" width="14" height="12" rx="2" ry="2"/>
+          <line x1="9" y1="10" x2="9" y2="14"/>
+        </svg>
+      </button>
+      <button class="hangup" id="call-hangup-btn" title="End call"
+              aria-label="End the call">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18a2 2 0 0 1 2-2.18h3a2 2 0 0 1 2 1.72c.13.9.34 1.78.63 2.63a2 2 0 0 1-.45 2.11l-1.05 1.05a16 16 0 0 0 6 6l1.05-1.05a2 2 0 0 1 2.11-.45c.85.29 1.73.5 2.63.63a2 2 0 0 1 1.72 2z"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- Drop overlay � shown while dragging files over the app -->
 <div id="drop-overlay" aria-hidden="true">

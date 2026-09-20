@@ -163,6 +163,45 @@ const SCHEMA_SQL = `
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='events' AND policyname='events readable own') THEN
       CREATE POLICY "events readable own" ON events FOR SELECT USING (auth.uid() = user_id);
     END IF;
+
+    -- Presence needs a SELECT policy on realtime.presences in addition to the
+    -- realtime.messages policies above (used by the calls channel in Phase 3).
+    -- Note: current Supabase realtime keeps presence in realtime.messages too,
+    -- so guard the presences policy with an existence check (both layouts work).
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname='realtime' AND tablename='presences') THEN
+      IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='realtime' AND tablename='presences' AND policyname='authenticated can see presences') THEN
+        CREATE POLICY "authenticated can see presences" ON realtime.presences FOR SELECT TO authenticated USING (true);
+      END IF;
+    END IF;
+  END
+  $$;
+
+  -- Table hardening: sanity CHECK constraints (idempotent). Data is normalized
+  -- first so legacy rows can never block the constraint from being added.
+  DO $$
+  BEGIN
+    UPDATE posts SET text = LEFT(text, 500) WHERE char_length(text) > 500;
+    UPDATE posts SET author = LEFT(author, 40) WHERE char_length(author) > 40;
+    UPDATE posts SET timestamp = 1 WHERE timestamp IS NOT NULL AND timestamp < 1;
+    UPDATE post_files SET file_size = NULL WHERE file_size IS NOT NULL AND file_size < 0;
+    UPDATE profiles SET username = LEFT(username, 40) WHERE char_length(username) > 40;
+    UPDATE profiles SET username = 'user' WHERE char_length(username) < 1;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'posts_text_length_ck') THEN
+      ALTER TABLE posts ADD CONSTRAINT posts_text_length_ck CHECK (char_length(text) <= 500);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'posts_author_length_ck') THEN
+      ALTER TABLE posts ADD CONSTRAINT posts_author_length_ck CHECK (char_length(author) BETWEEN 1 AND 40);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'posts_timestamp_pos_ck') THEN
+      ALTER TABLE posts ADD CONSTRAINT posts_timestamp_pos_ck CHECK (timestamp > 0);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'post_files_size_nonneg_ck') THEN
+      ALTER TABLE post_files ADD CONSTRAINT post_files_size_nonneg_ck CHECK (file_size IS NULL OR file_size >= 0);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'profiles_username_length_ck') THEN
+      ALTER TABLE profiles ADD CONSTRAINT profiles_username_length_ck CHECK (char_length(username) BETWEEN 1 AND 40);
+    END IF;
   END
   $$;
 `;
