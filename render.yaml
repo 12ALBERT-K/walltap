@@ -23,3 +23,5 @@ services:
         value: 15
       - key: MAX_FILES
         value: 5
+      - key: SIGNED_URL_TTL_SECONDS
+        value: 604800

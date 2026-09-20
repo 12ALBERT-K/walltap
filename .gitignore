@@ -2,3 +2,8 @@ node_modules/
 data/
 uploads/
 .env
+# Phase 2 admin panel lives in its own repo; keep it out of this one
+whatapp-admin/
+
+# Local Netlify folder
+.netlify

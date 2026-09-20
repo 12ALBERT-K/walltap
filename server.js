@@ -17,6 +17,7 @@ const DATABASE_URL              = process.env.DATABASE_URL || "";
 const STORAGE_BUCKET            = process.env.STORAGE_BUCKET || "uploads";
 const MAX_FILE_SIZE_MB          = Number(process.env.MAX_FILE_SIZE_MB || 15);
 const MAX_FILES                 = Number(process.env.MAX_FILES || 5);
+const SIGNED_URL_TTL_SECONDS    = Number(process.env.SIGNED_URL_TTL_SECONDS || 60 * 60 * 24 * 7);
 
 const REQUIRED = { SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY };
 const MISSING  = Object.entries(REQUIRED).filter(([, v]) => !v).map(([k]) => k);
@@ -54,6 +55,100 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS post_files_post_id_idx ON post_files(post_id);
   ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
   ALTER TABLE post_files ENABLE ROW LEVEL SECURITY;
+
+  -- profiles: app-specific fields on top of auth.users.
+  -- A trigger keeps it in sync with new signups automatically.
+  CREATE TABLE IF NOT EXISTS profiles (
+    id         uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    username   text UNIQUE NOT NULL,
+    is_admin   boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+  CREATE OR REPLACE FUNCTION public.handle_new_user()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = ''
+  AS $$
+  BEGIN
+    INSERT INTO public.profiles (id, username)
+    VALUES (
+      NEW.id,
+      COALESCE(
+        NULLIF(TRIM(NEW.raw_user_meta_data->>'display_name'), ''),
+        SPLIT_PART(COALESCE(NEW.email, ''), '@', 1),
+        'user'
+      )
+    )
+    ON CONFLICT (id) DO NOTHING;
+    RETURN NEW;
+  END;
+  $$;
+
+  DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+  CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+  -- events: analitycs/activity log written by the chat app + admin reads.
+  CREATE TABLE IF NOT EXISTS events (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_type text NOT NULL,
+    user_id    uuid REFERENCES profiles(id) ON DELETE SET NULL,
+    metadata   jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS events_created_at_idx ON events(created_at);
+  CREATE INDEX IF NOT EXISTS events_event_type_idx ON events(event_type);
+  ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+
+  -- admin_profiles: exposes auth.users.email to service-role reads only.
+  CREATE OR REPLACE VIEW public.admin_profiles AS
+    SELECT p.id, p.username, p.is_admin, p.created_at, u.email
+    FROM public.profiles p
+    JOIN auth.users u ON u.id = p.id;
+
+  -- RLS policies (defense in depth; the server itself uses the service role).
+  -- No IF NOT EXISTS here — guarded via pg_policies so the block is idempotent.
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts readable by authenticated') THEN
+      CREATE POLICY "posts readable by authenticated" ON posts FOR SELECT USING (auth.role() = 'authenticated');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts insert own') THEN
+      CREATE POLICY "posts insert own" ON posts FOR INSERT WITH CHECK (author_id IS NULL OR auth.uid() = author_id::uuid);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts update own') THEN
+      CREATE POLICY "posts update own" ON posts FOR UPDATE USING (auth.uid() = author_id::uuid);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='posts' AND policyname='posts delete own') THEN
+      CREATE POLICY "posts delete own" ON posts FOR DELETE USING (auth.uid() = author_id::uuid);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='post_files' AND policyname='post_files readable by authenticated') THEN
+      CREATE POLICY "post_files readable by authenticated" ON post_files FOR SELECT USING (auth.role() = 'authenticated');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='profiles' AND policyname='profiles readable by authenticated') THEN
+      CREATE POLICY "profiles readable by authenticated" ON profiles FOR SELECT USING (auth.role() = 'authenticated');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='profiles' AND policyname='profiles insert own') THEN
+      CREATE POLICY "profiles insert own" ON profiles FOR INSERT WITH CHECK (auth.uid() = id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='profiles' AND policyname='profiles update own') THEN
+      CREATE POLICY "profiles update own" ON profiles FOR UPDATE USING (auth.uid() = id);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='events' AND policyname='events insert own') THEN
+      CREATE POLICY "events insert own" ON events FOR INSERT WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='events' AND policyname='events readable own') THEN
+      CREATE POLICY "events readable own" ON events FOR SELECT USING (auth.uid() = user_id);
+    END IF;
+  END
+  $$;
 `;
 
 async function initSchema() {
@@ -75,10 +170,13 @@ async function initSchema() {
 
 async function ensureBucket() {
   if (!supabase) return;
-  const { error } = await supabase.storage.createBucket(STORAGE_BUCKET, { public: true });
+  const { error } = await supabase.storage.createBucket(STORAGE_BUCKET, { public: false });
   // "already exists" is the expected error on every boot after the first.
   if (error && !/already exists/i.test(error.message)) throw error;
-  console.log(`   Storage       → bucket "${STORAGE_BUCKET}" ready`);
+  // Enforce privacy even if the bucket was previously created public.
+  const { error: updErr } = await supabase.storage.updateBucket(STORAGE_BUCKET, { public: false });
+  if (updErr) throw updErr;
+  console.log(`   Storage       → bucket "${STORAGE_BUCKET}" ready (private)`);
 }
 
 // ── Multer config (in-memory; files stream straight to Storage) ─
@@ -179,24 +277,39 @@ function rateLimit({ windowMs, max }) {
 const postLimiter = rateLimit({ windowMs: 60 * 1000, max: 30 });
 
 // ── Storage helpers ───────────────────────────────────────────
-function publicUrl(name) {
-  return supabase.storage.from(STORAGE_BUCKET).getPublicUrl(name).data.publicUrl;
+function signUrl(name) {
+  if (!name) return Promise.resolve("");
+  return supabase.storage.from(STORAGE_BUCKET).createSignedUrl(name, SIGNED_URL_TTL_SECONDS)
+    .then(({ data, error }) => {
+      if (error) { console.error("createSignedUrl failed:", error.message); return ""; }
+      return data.signedUrl;
+    });
+}
+
+// ── Activity logging (failsafe — never breaks a user request) ──
+async function logEvent(event_type, user_id, metadata = {}) {
+  try {
+    await supabase.from("events").insert({ event_type, user_id, metadata });
+  } catch (err) {
+    console.error("logEvent failed:", err.message);
+  }
 }
 
 // ── Post helpers ──────────────────────────────────────────────
-function rowToPost(row, files = []) {
+async function rowToPost(row, files = []) {
+  const urls = await Promise.all(files.map(f => signUrl(f.file_name)));
   return {
     id:        row.id,
     text:      row.text,
     author:    row.author,
     authorId:  row.author_id,
     timestamp: row.timestamp,
-    files:     files.map(f => ({
+    files:     files.map((f, i) => ({
       filename: f.file_name,
       original: f.file_original,
       size:     f.file_size,
       mimetype: f.file_mimetype,
-      url:      publicUrl(f.file_name)
+      url:      urls[i] || ""
     }))
   };
 }
@@ -221,7 +334,7 @@ app.get("/api/posts", requireAuth, async (req, res) => {
       fetchFilesByPost()
     ]);
     if (postErr) throw postErr;
-    res.json(rows.map(row => rowToPost(row, filesById.get(row.id) || [])));
+    res.json(await Promise.all(rows.map(row => rowToPost(row, filesById.get(row.id) || []))));
   } catch (err) {
     console.error("GET /api/posts failed:", err.message);
     res.status(500).json({ error: "Failed to load posts." });
@@ -279,20 +392,27 @@ app.post("/api/posts", postLimiter, requireAuth, upload.array("files", MAX_FILES
       if (fileErr) throw fileErr;
     }
 
+    const fileOuts = uploaded.map(u => ({
+      filename: u.name,
+      original: u.original,
+      size:     u.size,
+      mimetype: u.mimetype
+    }));
+    const urls = await Promise.all(uploaded.map(u => signUrl(u.name)));
+
     const newPost = {
       id,
       text,
       author:    req.author,
       authorId:  req.user.id,
       timestamp,
-      files:     uploaded.map(u => ({
-        filename: u.name,
-        original: u.original,
-        size:     u.size,
-        mimetype: u.mimetype,
-        url:      publicUrl(u.name)
-      }))
+      files:     fileOuts.map((f, i) => ({ ...f, url: urls[i] || "" }))
     };
+
+    logEvent("message_sent", req.user.id, { text, file_count: files.length, id });
+    if (files.length) {
+      logEvent("file_uploaded", req.user.id, { id, file_count: files.length });
+    }
 
     broadcast("post-created", newPost);
     res.status(201).json(newPost);
@@ -326,6 +446,7 @@ app.delete("/api/posts/:id", requireAuth, async (req, res) => {
     try { await supabase.storage.from(STORAGE_BUCKET).remove(files.map(f => f.file_name)); } catch (_) {}
   }
 
+  logEvent("message_deleted", req.user.id, { id });
   broadcast("post-deleted", { id });
   res.status(204).end();
 });

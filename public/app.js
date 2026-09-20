@@ -125,6 +125,16 @@ async function apiFetch(url, options = {}) {
   return fetch(url, opts);
 }
 
+// Fire-and-forget analytics row (used by the admin dashboard).
+function logEvent(event_type, metadata = {}) {
+  if (!supabase || !currentUserId) return;
+  supabase
+    .from("events")
+    .insert({ event_type, user_id: currentUserId, metadata })
+    .then(() => {})
+    .catch(() => {});
+}
+
 
 // ============================================================
 //  createPostElement(post)
@@ -709,6 +719,7 @@ function enterApp() {
   headerUser.textContent = currentUser || "";
   loadPosts();
   connectSSE();
+  logEvent("page_view");
 }
 
 function showSignInOverlay() {
