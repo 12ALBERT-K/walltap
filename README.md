@@ -58,6 +58,56 @@ After first boot, confirm the log shows `Schema → ensured` and
 `bucket "uploads" ready (private)`, then create your admin account with
 `npm run provision-admin`.
 
+> **Free-tier warning:** the Supabase free plan pauses a project after ~7 days of
+> inactivity, and Render's free tier (where still available for new accounts)
+> spins down after ~15 minutes idle. A site that demos fine can be dead a week
+> later. Add billing, or set a reminder to touch the project.
+
+## Security model
+
+The server uses the **service role** key, so it bypasses RLS. RLS is defence in
+depth for direct access to Supabase, and the anon key is public by necessity (it
+is served to every browser at `/config.js`):
+
+- `posts` may only be inserted by an authenticated user matching `author_id`.
+- `profiles` grants `UPDATE (username)` only, so a signed-in user cannot promote
+  themselves with `is_admin = true`.
+- `admin_profiles` (the view exposing `auth.users.email`) is revoked from
+  `anon`/`authenticated` and granted to `service_role` only. Views run as their
+  owner and bypass RLS, so without that revoke the whole user list would be
+  readable with the public anon key.
+- `events` may only be inserted for your own `user_id`.
+
+If you change any policy in `SCHEMA_SQL`, re-verify these grants — Supabase
+grants all privileges on new objects in `public` to `anon` by default.
+
+## Known limitations
+
+Unfixed, and worth knowing before this meets real traffic:
+
+- **`GET /api/posts` has no pagination and signs every attachment on every
+  request** (`rowToPost` → `createSignedUrl` per file). At PostgREST's 1000-row
+  ceiling that is up to ~1,000 concurrent Storage calls per page load, and this
+  endpoint is not rate limited. Expect trouble well before 1,000 posts.
+- **The feed renders every post** with no virtualisation, and does one DOM query
+  per post while loading.
+- **Signed URLs expire after 7 days** and there is no refresh endpoint, so
+  attachments in old posts break permanently once the TTL passes.
+- **Soft-deleted posts keep their files in Storage forever**; there is no
+  cleanup job.
+- **Calls are STUN-only** — no TURN — so they fail on symmetric NAT and most
+  corporate/mobile networks. There is also no connect-phase timeout, so a failed
+  call can sit on "Connecting…" with the camera still on.
+- `npm run backfill-profiles` reads all profile ids in one unpaginated query; past
+  1,000 profiles an existing admin can fall outside the fetched set and be
+  overwritten with `is_admin = false`. Fix before running it on a large project.
+- `npm run provision-admin` hardcodes the username `admin`, so a second admin
+  account cannot be created (the column is `UNIQUE`).
+- Uploads are rejected with HTTP 500 rather than 400 when the file type is not
+  allowed, so the client shows a generic error.
+- `logEvent` wraps its insert in `try/catch`, but supabase-js returns `{ error }`
+  instead of throwing — so analytics failures are silent.
+
 ## Schema changes
 
 `SCHEMA_SQL` in `server.js` is the single source of truth — every statement is

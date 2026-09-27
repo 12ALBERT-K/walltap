@@ -6,7 +6,7 @@
   <title>Walltap</title>
   <link rel="icon" type="image/png" href="logo.png" />
   <meta name="theme-color" content="#073642" />
-  <meta name="description" content="Walltap � a real-time public board for sharing text and files." />
+  <meta name="description" content="Walltap — a real-time public board for sharing text and files." />
 
 
   <style>
@@ -65,7 +65,7 @@
     }
 
     /* -- CHAT COLUMN ----------------------------------------- */
-    /* Transparent shell � the doodle background runs across the
+    /* Transparent shell — the doodle background runs across the
        whole page so the column never shows visible edges. */
     .board {
       position: relative;
@@ -300,7 +300,7 @@
     }
     .post.own .post-ticks { color: var(--blue); }
 
-    /* Erase button � lives inside the meta row */
+    /* Erase button — lives inside the meta row */
     .post-delete {
       border: none;
       background: none;
@@ -314,7 +314,7 @@
     }
     .post-delete:hover { color: var(--red); opacity: 1; }
 
-    /* Erase animation � added by JS before DOM removal */
+    /* Erase animation — added by JS before DOM removal */
     .post.erasing {
       animation: erase-out 0.22s ease-in forwards;
       pointer-events: none;
@@ -457,7 +457,7 @@
 
     .tray button .rec-icon { display: none; }
 
-    /* Mic button � always visible beside Send */
+    /* Mic button — always visible beside Send */
     .tray button#mic-btn {
       background: none;
       color: var(--text-sub);
@@ -941,7 +941,7 @@
     <div class="header-avatar" aria-hidden="true"><img src="logo.png" alt="" /></div>
     <div class="header-meta">
       <h1>Walltap</h1>
-      <p><span class="online-dot"></span>online � public board</p>
+      <p><span class="online-dot"></span>online — public board</p>
     </div>
     <span class="header-user" id="header-user"></span>
     <button class="logout-btn" id="logout-btn" title="Sign out" aria-label="Log out">
@@ -953,14 +953,14 @@
     </button>
   </header>
 
-  <!-- Online presence bar � who's here to call -->
+  <!-- Online presence bar — who's here to call -->
   <div class="online-bar hidden-bar" id="online-bar">
     <span class="online-label">Online</span>
     <div class="online-list" id="online-list"></div>
   </div>
 
 <!--
-    FEED � app.js injects a new <section class="post"> here
+    FEED — app.js injects a new <section class="post"> here
     for every post it receives from GET /api/posts, and for
     each new post created via the compose form.
   -->
@@ -971,7 +971,7 @@
     </div>
   </main>
 
-  <!-- Privacy disclosure � retention for moderation / safety -->
+  <!-- Privacy disclosure — retention for moderation / safety -->
   <footer class="board-footer">
     Messages you erase are hidden from the board but may be retained by Walltap
     for moderation and safety purposes.
@@ -979,7 +979,7 @@
 
 </div><!-- /.board -->
 
-<!-- CHAT TRAY � fixed compose area at the bottom -->
+<!-- CHAT TRAY — fixed compose area at the bottom -->
 <div class="tray">
   <div class="tray-inner">
     <textarea
@@ -1017,10 +1017,10 @@
 <div id="rec-status" aria-live="polite">
   <span class="rec-dot"></span>
   <span class="rec-time" id="rec-time">0:00</span>
-  <span class="rec-label">Recording� tap to stop</span>
+  <span class="rec-label">Recording — tap to stop</span>
 </div>
 
-<!-- Attachment preview � files ready to send with the next post -->
+<!-- Attachment preview — files ready to send with the next post -->
 <div id="attach-preview"></div>
 
 <!-- Incoming call overlay -->
@@ -1088,12 +1088,12 @@
   </div>
 </div>
 
-<!-- Drop overlay � shown while dragging files over the app -->
+<!-- Drop overlay — shown while dragging files over the app -->
 <div id="drop-overlay" aria-hidden="true">
   <div class="drop-box">Drop files to attach</div>
 </div>
 
-<!-- Auth overlay � shown when the user isn't logged in -->
+<!-- Auth overlay — shown when the user isn't logged in -->
 <div id="auth-overlay">
   <div class="auth-card">
     <div class="auth-logo" aria-hidden="true"><img src="logo.png" alt="" /></div>
