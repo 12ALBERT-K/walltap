@@ -108,11 +108,19 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS events_event_type_idx ON events(event_type);
   ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 
-  -- admin_profiles: exposes auth.users.email to service-role reads only.
+  -- admin_profiles: exposes auth.users.email to admins only.
+  -- A plain view runs with its OWNER's privileges and so bypasses RLS, while
+  -- Supabase grants every privilege on new public objects to anon/authenticated.
+  -- Without the REVOKE below, the entire user list (emails + is_admin) is
+  -- readable by anyone holding the public anon key. Must stay directly after
+  -- this CREATE, because CREATE OR REPLACE preserves grants but a DROP/recreate
+  -- would reset them to the Supabase defaults.
   CREATE OR REPLACE VIEW public.admin_profiles AS
     SELECT p.id, p.username, p.is_admin, p.created_at, u.email
     FROM public.profiles p
     JOIN auth.users u ON u.id = p.id;
+  REVOKE ALL ON public.admin_profiles FROM anon, authenticated;
+  GRANT SELECT ON public.admin_profiles TO service_role;
 
   -- RLS policies (defense in depth; the server itself uses the service role).
   -- posts policies are DROP+CREATE so definition changes (e.g. soft-delete
@@ -120,11 +128,27 @@ const SCHEMA_SQL = `
   DROP POLICY IF EXISTS "posts readable by authenticated" ON posts;
   CREATE POLICY "posts readable by authenticated" ON posts FOR SELECT USING (auth.role() = 'authenticated' AND deleted_at IS NULL);
   DROP POLICY IF EXISTS "posts insert own" ON posts;
-  CREATE POLICY "posts insert own" ON posts FOR INSERT WITH CHECK (author_id IS NULL OR auth.uid() = author_id::uuid);
+  -- author_id must be present and owned: the old "author_id IS NULL OR ..." form
+  -- let an UNAUTHENTICATED caller insert posts with a null author, because
+  -- auth.uid() is NULL for anon and the null branch short-circuits to true.
+  CREATE POLICY "posts insert own" ON posts FOR INSERT WITH CHECK (author_id IS NOT NULL AND auth.uid() = author_id::uuid);
   DROP POLICY IF EXISTS "posts update own" ON posts;
   CREATE POLICY "posts update own" ON posts FOR UPDATE USING (auth.uid() = author_id::uuid);
   DROP POLICY IF EXISTS "posts delete own" ON posts;
   CREATE POLICY "posts delete own" ON posts FOR DELETE USING (auth.uid() = author_id::uuid);
+
+  -- Privilege escalation guard: RLS is row-level only, so "profiles update own"
+  -- gated WHICH ROW a user could touch but not WHICH COLUMNS. Any signed-in user
+  -- could therefore PATCH their own row to is_admin = true and walk straight into
+  -- the admin dashboard (every email, every message incl. soft-deleted). Fix it
+  -- with column privileges, not a RLS check — a WITH CHECK cannot see the old row,
+  -- so "is_admin = false" would also lock admins out of editing their own profile.
+  -- Re-applied every boot so a drifted grant self-heals. admins can still be
+  -- promoted/demoted with the service role (npm run provision-admin).
+  DROP POLICY IF EXISTS "profiles update own" ON profiles;
+  CREATE POLICY "profiles update own" ON profiles FOR UPDATE USING (auth.uid() = id);
+  REVOKE UPDATE ON public.profiles FROM anon, authenticated;
+  GRANT UPDATE (username) ON public.profiles TO authenticated;
 
   -- Realtime broadcast authorization: any signed-in user may join the "board"
   -- channel and receive (and send) broadcast messages on it.
@@ -152,9 +176,6 @@ const SCHEMA_SQL = `
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='profiles' AND policyname='profiles insert own') THEN
       CREATE POLICY "profiles insert own" ON profiles FOR INSERT WITH CHECK (auth.uid() = id);
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='profiles' AND policyname='profiles update own') THEN
-      CREATE POLICY "profiles update own" ON profiles FOR UPDATE USING (auth.uid() = id);
     END IF;
 
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='events' AND policyname='events insert own') THEN
