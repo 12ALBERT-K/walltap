@@ -15,7 +15,7 @@ Postgres, Storage, Realtime).
 - **Calls** — 1:1 WebRTC voice/video. Signaling rides a private Supabase
   Realtime channel (`calls`); presence drives the online bar; ICE is STUN-only
   today (see Phase 3 in `ROADMAP.md` for TURN).
-- **Admin dashboard** — separate repo in `whatapp-admin/` (Netlify Functions +
+- **Admin dashboard** — separate repo in `walltap-admin/` (Netlify Functions +
   service-role key), with its own README.
 
 ## Local development
@@ -66,7 +66,7 @@ idempotent. For production, apply changes via the Supabase SQL editor (or
 
 ## Admin dashboard
 
-See `whatapp-admin/README.md`. It is its own repo, deployed on Netlify, with
+See `walltap-admin/README.md`. It is its own repo, deployed on Netlify, with
 the functions gated by server-side admin checks.
 
 More detail in [`ROADMAP.md`](ROADMAP.md).

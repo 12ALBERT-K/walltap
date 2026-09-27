@@ -60,7 +60,7 @@ app's browser clients for call media when STUN alone isn't enough.
 
 ## Phase 2 — Admin panel + analytics (separate repo) — IMPLEMENTED, deploy left
 
-Located at **`whatapp-admin/`** (git-ignored here; its own repo, deployed on
+Located at **`walltap-admin/`** (git-ignored here; its own repo, deployed on
 Netlify).
 
 ### Done

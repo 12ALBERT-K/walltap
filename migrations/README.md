@@ -32,5 +32,5 @@ them in sync.
   applied (the boot log reports `Startup check failed`).
 - Storage (bucket privacy, signed URLs) and Realtime RLS policies are also
   enforced on every boot in `server.js`.
-- The admin repo (`whatapp-admin/`) contains no schema — it only reads this
+- The admin repo (`walltap-admin/`) contains no schema — it only reads this
   same project.
