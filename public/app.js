@@ -96,6 +96,9 @@ let localStream       = null;
 let remoteStream      = null;
 let pendingIce        = [];
 let ringTimer         = null;
+let ringPulseTimer    = null;   // ringtone pulse; kept separate from ringTimer so
+                                // the interval is always clearable (they shared one
+                                // handle, which leaked an uncleared interval)
 let ringCtx           = null;
 let ringGain          = null;
 let ringOsc           = null;
@@ -1060,12 +1063,21 @@ async function startCall(peerId, peerName) {
     return;
   }
 
-  const stream = await getLocalStream(true);
-  if (!stream) return;
-
+  // Claim the call slot BEFORE awaiting the permission prompt. getUserMedia
+  // yields across a real user gesture, so with the state set afterwards two fast
+  // clicks both passed the inCall() guard: the second overwrote localStream
+  // without stopping the first, leaving that camera live with no UI to end it.
   callPeerId   = peerId;
   callPeerName = peerName;
   callState    = "outgoing";
+
+  const stream = await getLocalStream(true);
+  if (!stream) {
+    callState = "idle";
+    callPeerId = null;
+    callPeerName = null;
+    return;
+  }
   localStream  = stream;
 
   sendCallSignal("call-invite", {
@@ -1400,7 +1412,7 @@ function stopCallTimer() {
 
 // ── Ringtone (WebAudio, no asset file) ───────────────────────
 function startRing() {
-  if (ringTimer || !window.AudioContext) return;
+  if (ringPulseTimer || !window.AudioContext) return;
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (Ctx) {
     try {
@@ -1416,7 +1428,7 @@ function startRing() {
     } catch (_) {}
   }
   let audible = false;
-  ringTimer = setInterval(() => {
+  ringPulseTimer = setInterval(() => {
     if (!ringCtx || !ringGain) return;
     audible = !audible;
     ringGain.gain.setTargetAtTime(audible ? 0.05 : 0, ringCtx.currentTime, 0.05);
@@ -1424,7 +1436,9 @@ function startRing() {
 }
 
 function stopRing() {
-  if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
+  // Only the pulse lives here. ringTimer is the call ringing/no-answer timeout
+  // and is cleared explicitly by every state transition that ends the ringing.
+  if (ringPulseTimer) { clearInterval(ringPulseTimer); ringPulseTimer = null; }
   if (ringOsc) { try { ringOsc.stop(); } catch (_) {} ringOsc = null; }
   if (ringCtx) { try { ringCtx.close(); } catch (_) {} ringCtx = null; ringGain = null; }
 }
