@@ -135,8 +135,10 @@ Unfixed, and worth knowing before this meets real traffic:
 - `npm run backfill-profiles` reads all profile ids in one unpaginated query; past
   1,000 profiles an existing admin can fall outside the fetched set and be
   overwritten with `is_admin = false`. Fix before running it on a large project.
-- `npm run provision-admin` hardcodes the username `admin`, so a second admin
-  account cannot be created (the column is `UNIQUE`).
+- `npm run provision-admin` refuses to touch an account that already exists
+  unless you pass `--promote`. Promotion is safe to do for an account the script
+  itself half-created, but it is also the exact operation that would turn a real
+  user's account into an admin — so it is never automatic.
 - Uploads are rejected with HTTP 500 rather than 400 when the file type is not
   allowed, so the client shows a generic error.
 - `logEvent` wraps its insert in `try/catch`, but supabase-js returns `{ error }`
