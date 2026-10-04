@@ -1,3 +1,4 @@
+(function () {
 // ============================================================
 //  app.js  —  Walltap frontend logic
 //  No frameworks, no build step. Plain ES2020 JavaScript.
@@ -1765,3 +1766,4 @@ syncAuthToggle();
 updateSendBtn();
 if (isRecoveryLink) enterRecoveryMode();
 checkAuth();
+})();
