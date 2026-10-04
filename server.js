@@ -337,6 +337,9 @@ function bearerToken(req) {
   return "";
 }
 
+let startupError = "";
+app.get("/__diag", (_req, res) => res.json({ ready, missing: MISSING, startupError }));
+
 async function requireAuth(req, res, next) {
   if (!ready) return res.status(503).json({ error: "Server is not configured yet." });
   const token = bearerToken(req);
@@ -706,6 +709,7 @@ async function main() {
     connectRealtime();
     ready = true;
   } catch (err) {
+    startupError = err.stack || err.message || String(err);
     console.error(`\n⚠  Startup check failed: ${err.message}\n`);
   }
 }
