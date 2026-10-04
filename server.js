@@ -1,4 +1,13 @@
 require("dotenv").config();
+const dns = require("dns");
+
+// Prefer IPv4 for every outbound lookup. Supabase's direct database hostname
+// has an AAAA record, and hosts without IPv6 egress (Render's free tier, for
+// one) fail the Postgres connect with ENETUNREACH when the IPv6 address is
+// tried first. Ordering IPv4 first keeps the connection working everywhere;
+// hosts that are IPv6-only still resolve because the A record is absent there.
+if (typeof dns.setDefaultResultOrder === "function") dns.setDefaultResultOrder("ipv4first");
+
 const express    = require("express");
 const path       = require("path");
 const crypto     = require("crypto");
