@@ -684,25 +684,30 @@ app.use((err, req, res, next) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────
+// Bind first, initialise second. Schema + storage setup touches Postgres and
+// Storage over the network, and on a free-tier instance that can take longer
+// than the platform's health-check window. Listening immediately keeps the
+// process healthy through a slow (or hanging) init; API routes already gate
+// on `ready` and answer 503 until initialisation finishes.
+app.listen(PORT, () => {
+  console.log(`\n✦  Walltap running → http://localhost:${PORT}`);
+  console.log(`   Backend       → Supabase ${SUPABASE_URL ? "configured" : "(not configured)"}\n`);
+});
+
 async function main() {
   if (MISSING.length) {
     console.warn(`\n⚠  Missing environment variables: ${MISSING.join(", ")}`);
     console.warn("   The UI will load, but the API returns 503 until they are set.\n");
-  } else {
-    try {
-      await initSchema();
-      await ensureBucket();
-      connectRealtime();
-      ready = true;
-    } catch (err) {
-      console.error(`\n⚠  Startup check failed: ${err.message}\n`);
-    }
+    return;
   }
-
-  app.listen(PORT, () => {
-    console.log(`\n✦  Walltap running → http://localhost:${PORT}`);
-    console.log(`   Backend       → Supabase ${SUPABASE_URL ? "configured" : "(not configured)"}\n`);
-  });
+  try {
+    await initSchema();
+    await ensureBucket();
+    connectRealtime();
+    ready = true;
+  } catch (err) {
+    console.error(`\n⚠  Startup check failed: ${err.message}\n`);
+  }
 }
 
 main();

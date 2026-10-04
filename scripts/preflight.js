@@ -115,7 +115,7 @@ if (!fs.existsSync(adminDir)) {
   warn("walltap-admin/ not present (separate repo) — skipping");
 } else {
   const fns = fs.readdirSync(adminDir).filter(f => f.endsWith(".js") && !f.startsWith("_"));
-  const expected = ["list-users.js", "list-all-messages.js", "analytics-summary.js"];
+  const expected = ["list-users.js", "list-all-messages.js", "analytics-summary.js", "send-reset.js"];
   const extra = fns.filter(f => !expected.includes(f));
   extra.length ? extra.forEach(f => bad(`unexpected deployable function: ${f} (Netlify WILL bundle it)`))
                : ok(`exactly the ${expected.length} expected functions`);
