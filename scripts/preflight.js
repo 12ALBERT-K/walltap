@@ -25,6 +25,21 @@ if (!process.env.DATABASE_URL) {
   warn("DATABASE_URL has no sslmode= — the server will connect with rejectUnauthorized:false");
 }
 
+// Supabase's direct host (db.<ref>.supabase.co) is IPv6-only: it has an AAAA
+// record and no A record. IPv4-only hosts therefore fail the schema bootstrap
+// with ENETUNREACH, which leaves the server listening but every API route
+// answering 503 — the UI loads and the app looks "deployed" while doing
+// nothing. Only the pooler (host ...pooler.supabase.com) has A records.
+if (process.env.DATABASE_URL) {
+  let dbHost = "";
+  try { dbHost = new URL(process.env.DATABASE_URL).hostname; } catch { /* malformed */ }
+  if (/^db\./.test(dbHost)) {
+    bad(`DATABASE_URL points at the direct host ${dbHost}, which is IPv6-only — use the pooler (...pooler.supabase.com) or schema bootstrap will fail on IPv4-only hosts`);
+  } else if (dbHost) {
+    ok("DATABASE_URL uses an IPv4-resolvable host");
+  }
+}
+
 // The two ways this project has actually leaked.
 console.log("\nKey hygiene");
 const url = process.env.SUPABASE_URL || "";
