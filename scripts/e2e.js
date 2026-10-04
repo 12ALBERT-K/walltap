@@ -2,16 +2,19 @@
 // Creates throwaway users, exercises the real HTTP endpoints, then cleans up.
 //
 //   node scripts/e2e.js            (expects the server already running on PORT)
+//   E2E_BASE=https://host node scripts/e2e.js   (test a deployed instance)
 const fs = require("fs");
 const path = require("path");
 const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
 const PORT = process.env.E2E_PORT || process.env.PORT || 3999;
-// Pinned to IPv4: the rate-limit burst below uses [::1] for an isolated key, and
-// "localhost" may resolve to either family.
-const BASE = `http://127.0.0.1:${PORT}`;
-const BURST = `http://[::1]:${PORT}`;
+// Local runs pin the loopback address because the rate-limit burst below uses
+// [::1] for an isolated key and "localhost" may resolve to either family.
+// E2E_BASE targets a deployed instance instead.
+const REMOTE = !!process.env.E2E_BASE;
+const BASE = process.env.E2E_BASE || `http://127.0.0.1:${PORT}`;
+const BURST = REMOTE ? BASE : `http://[::1]:${PORT}`;
 const STAMP = Date.now();
 const TESTERS = [];
 
@@ -139,8 +142,17 @@ async function main() {
     const fr2 = await fetch(rf[0].url);
     check(fr2.status === 200, `refreshed signed URL downloads -> 200 (got ${fr2.status})`);
   }
-  r = await fetch(`${BASE}/api/posts/refresh-files`, { method: "POST", headers: auth(A) });
+  // Genuinely unauthenticated: no Authorization header at all. (Sending a valid
+  // token here and expecting 401 tests nothing — the route is meant to answer
+  // 200 for a signed-in caller.)
+  r = await fetch(`${BASE}/api/posts/refresh-files`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [rf[0].post_id] }),
+  });
   check(r.status === 401, `refresh-files unauthenticated -> 401 (got ${r.status})`);
+  r = await fetch(`${BASE}/api/posts/refresh-files`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer not-a-real-token" }, body: JSON.stringify({ ids: [rf[0].post_id] }),
+  });
+  check(r.status === 401, `refresh-files with a bogus token -> 401 (got ${r.status})`);
 
   console.log("\nFeed paging");
   const page = await (await fetch(`${BASE}/api/posts?limit=2`, { headers: auth(B) })).json();
@@ -185,8 +197,16 @@ async function main() {
   check(!after.some(p => p.id === post.id), "deleted post is gone from the feed");
   check(after.some(p => p.id === withFile.id), "the other post survived the delete");
 
+  // The post is already soft-deleted, and the route selects only
+  // deleted_at IS NULL, so it is gone for every caller -- 404, not 403. The 403
+  // path is covered above by the live-post case.
   r = await fetch(`${BASE}/api/posts/${post.id}`, { method: "DELETE", headers: auth(B) });
-  check(r.status === 403, `other user still gets 403 on a deleted post -> 403 (got ${r.status})`);
+  check(r.status === 404, `other user gets 404 on an already-deleted post (got ${r.status})`);
+
+  // An admin is not exempt: deletion is author-only, and the admin view reads
+  // deleted rows through the service role rather than this endpoint.
+  r = await fetch(`${BASE}/api/posts/${withFile.id}`, { method: "DELETE", headers: auth(B) });
+  check(r.status === 403, `non-author cannot delete a live post -> 403 (got ${r.status})`);
 
   console.log("\nEvents + rate limit");
   const { data: evs } = await admin.from("events").select("event_type").eq("user_id", A.id);
@@ -196,22 +216,40 @@ async function main() {
   // postLimiter keys on req.ip with a 60s window, and every request above
   // shares one key — so this burst must use its own loopback address or it
   // inherits a partly-consumed window and straddles a reset.
-  const BURST = "http://[::1]:" + PORT;
-  let limited = false, retryAfter = null, allowed = 0;
-  try {
-    for (let i = 0; i < 40; i++) {
-      const rr = await fetch(`${BURST}/api/posts`, {
-        method: "POST", headers: { ...auth(B), "Content-Type": "application/json" },
-        body: JSON.stringify({ text: "spam " + i }),
-      });
-      if (rr.status === 429) { limited = true; retryAfter = rr.headers.get("retry-after"); break; }
-      if (rr.status === 201) allowed++;
-    }
-  } catch (_) { limited = "ipv6-unavailable"; }
-  check(limited === true, `postLimiter returns 429 within 40 rapid posts (got ${limited})`);
-  check(allowed >= 30, `limiter allowed ~max posts before throttling (allowed ${allowed})`);
-  check(retryAfter !== null && +retryAfter > 0 && +retryAfter <= 60,
-    `429 carries a sane Retry-After (${retryAfter})`);
+  //
+  // That trick needs two source IPs, which a remote target can't give us: every
+  // request from here arrives as the same address, so the burst would consume
+  // the quota the earlier checks already spent and the numbers would be
+  // meaningless. Run it locally for this section; skip it against a deploy
+  // rather than report a number we cannot trust.
+  if (REMOTE) {
+    console.log("\nEvents + rate limit");
+    const { data: evsR } = await admin.from("events").select("event_type").eq("user_id", A.id);
+    check((evsR || []).some(e => e.event_type === "message_sent"), "message_sent was logged");
+    check((evsR || []).some(e => e.event_type === "file_uploaded"), "file_uploaded was logged");
+    console.log("  SKIP  rate-limit burst (needs two source IPs; run locally to cover it)");
+  } else {
+    console.log("\nEvents + rate limit");
+    const { data: evs } = await admin.from("events").select("event_type").eq("user_id", A.id);
+    check((evs || []).some(e => e.event_type === "message_sent"), "message_sent was logged");
+    check((evs || []).some(e => e.event_type === "file_uploaded"), "file_uploaded was logged");
+
+    let limited = false, retryAfter = null, allowed = 0;
+    try {
+      for (let i = 0; i < 40; i++) {
+        const rr = await fetch(`${BURST}/api/posts`, {
+          method: "POST", headers: { ...auth(B), "Content-Type": "application/json" },
+          body: JSON.stringify({ text: "spam " + i }),
+        });
+        if (rr.status === 429) { limited = true; retryAfter = rr.headers.get("retry-after"); break; }
+        if (rr.status === 201) allowed++;
+      }
+    } catch (_) { limited = "ipv6-unavailable"; }
+    check(limited === true, `postLimiter returns 429 within 40 rapid posts (got ${limited})`);
+    check(allowed >= 30, `limiter allowed ~max posts before throttling (allowed ${allowed})`);
+    check(retryAfter !== null && +retryAfter > 0 && +retryAfter <= 60,
+      `429 carries a sane Retry-After (${retryAfter})`);
+  }
 
   console.log("\nCleanup");
   const removed = await cleanup();
