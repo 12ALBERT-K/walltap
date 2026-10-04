@@ -135,12 +135,55 @@ Netlify).
 
 ---
 
+## Phase 5 — Username accounts + admin-mediated recovery — DONE
+
+Sign-up is **username + password**, with no email field and no confirmation mail.
+Supabase Auth is email-only, so `normaliseLogin()` maps a username onto a
+synthetic `<username>@walltap.local` address. Real emails from pre-existing
+accounts still pass through, so nobody is locked out.
+
+- [x] Username-only sign-up / sign-in (`normaliseLogin` in `public/app.js`);
+      3–40 chars, lowercased, `[a-z0-9._-]`
+- [x] Legacy real-email accounts unaffected; their emailed reset link still works
+- [x] **Fixed a signup-blocking bug in `handle_new_user()`**: `ON CONFLICT (id)
+      DO NOTHING` does not cover the `username` UNIQUE constraint, so a repeated
+      `display_name` raised `unique_violation`, the trigger aborted, and
+      Supabase reported an opaque "Database error creating new user". Now
+      suffixes on collision (`alice` → `alice1`) and returns early if a profile
+      row already exists.
+- [x] "Forgot password" tells synthetic accounts to ask an admin instead of
+      silently bouncing an email into a dead domain
+- [x] `friendlyAuthError()` maps Supabase's email-shaped messages ("User already
+      registered") onto username-appropriate text, so error copy no longer
+      leaks or confuses
+- [x] `send-reset.js` — single-use recovery link, keyed on `userId` (never an
+      email, so it is not an enumeration oracle), `requireAdmin()` first, refuses
+      self-reset, logs `password_reset_issued`, never stores the link
+- [x] Users tab: "Reset link" button, one-time display with copy, explicit
+      warning that delivery is manual
+- [x] `npm run validate` in the admin repo — 12/12 against the real project
+
+### Deliberately not done
+
+- **Storing or emailing passwords.** Passwords are bcrypt hashes and cannot be
+  recovered. Keeping a plaintext copy would make the dashboard a credential
+  vault — one compromise exposes every user's password *and* every password they
+  reuse elsewhere. It would also be useless for existing accounts, whose
+  passwords predate any such table. Issuing a fresh link is the only option that
+  actually helps a locked-out user.
+- **Automatic email delivery.** `@walltap.local` has no inbox, so there is
+  nowhere to send to. Delivery is manual by design.
+- Requires **"Confirm email" off** in Supabase → Auth → Email, and the chat app
+  URL added to the redirect allowlist, or sign-up/reset dead-ends.
+
+---
+
 ## Env var checklist
 
 | Service | Variables |
 | --- | --- |
 | Chat app (Render) | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `MAX_FILE_SIZE_MB`, `MAX_FILES`, `STORAGE_BUCKET`, `SIGNED_URL_TTL_SECONDS` |
-| Admin (Netlify) | `SUPABASE_URL`, `SUPABASE_ANON_KEY` (frontend), `SUPABASE_SERVICE_ROLE_KEY` (functions only) |
+| Admin (Netlify) | `SUPABASE_URL`, `SUPABASE_ANON_KEY` (frontend), `SUPABASE_SERVICE_ROLE_KEY` (functions only), `CHAT_APP_URL` (functions only — recovery-link redirect target) |
 
 ## Security checklist
 

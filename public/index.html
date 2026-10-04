@@ -215,6 +215,31 @@
       user-select: none;
     }
 
+    /* Paging control — the feed only holds the newest page until asked for more */
+    #feed-more {
+      display: flex;
+      justify-content: center;
+      padding: 0.9rem 1rem 0.2rem;
+    }
+    #load-older-btn {
+      font: inherit;
+      font-size: 0.85rem;
+      color: var(--text-sub);
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 999px;
+      padding: 0.4rem 1rem;
+      cursor: pointer;
+    }
+    #load-older-btn:hover:not(:disabled) {
+      color: var(--text-main);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+    #load-older-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
     #feed-empty span {
       display: block;
       font-size: 2.2rem;
@@ -962,8 +987,13 @@
 <!--
     FEED — app.js injects a new <section class="post"> here
     for every post it receives from GET /api/posts, and for
-    each new post created via the compose form.
+    each new post created via the compose form. The feed is
+    paged: it loads the newest PAGE_SIZE posts and walks
+    backwards in time via the "load older" control above.
   -->
+  <div id="feed-more" hidden>
+    <button type="button" id="load-older-btn">Load older posts</button>
+  </div>
   <main id="feed">
     <div id="feed-empty">
       <span>?</span>
@@ -1099,8 +1129,7 @@
     <div class="auth-logo" aria-hidden="true"><img src="logo.png" alt="" /></div>
     <h2>Walltap</h2>
     <p id="auth-subtitle">Sign in or create an account</p>
-    <input type="text"     id="auth-display" class="hidden" placeholder="Display name (optional)" autocomplete="nickname" maxlength="40" />
-    <input type="email"    id="auth-email" placeholder="Email" autocomplete="email" />
+    <input type="text"     id="auth-email" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" />
     <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password" />
     <button id="auth-btn">Sign in</button>
     <div class="auth-error" id="auth-error"></div>
@@ -1108,9 +1137,9 @@
     <div class="auth-forgot" id="auth-forgot">Forgot password?</div>
 
     <div id="reset-panel" class="hidden">
-      <p class="auth-note" id="reset-note">Enter your email and we'll send a reset link.</p>
+      <p class="auth-note" id="reset-note">Enter your username and we'll tell you how to get back in.</p>
       <div id="reset-request-group">
-        <input type="email" id="reset-email" placeholder="Email" autocomplete="email" />
+        <input type="text" id="reset-email" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" />
         <button id="reset-request-btn">Send reset link</button>
       </div>
       <div id="recovery-panel" class="hidden">

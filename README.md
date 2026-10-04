@@ -10,13 +10,47 @@ Postgres, Storage, Realtime).
   (`SCHEMA_SQL`), verifies JWTs server-side, uploads files to private storage,
   serves signed URLs, and broadcasts new/deleted posts over Supabase Realtime.
 - **Frontend** — plain ES2020 in `public/` (no build step): `index.html`,
-  `app.js`. Supabase handles auth (email/password), realtime feeds, presence
-  and call signaling.
+  `app.js`. Supabase handles auth, realtime feeds, presence and call signaling.
+- **Accounts** — **username + password**, no email address. Supabase Auth only
+  speaks email, so `normaliseLogin()` in `public/app.js` maps a username onto a
+  synthetic address (`<username>@walltap.local`, a domain with no MX record).
+  Real emails typed by earlier users still pass through untouched, so legacy
+  accounts keep working. See [Auth model](#auth-model).
 - **Calls** — 1:1 WebRTC voice/video. Signaling rides a private Supabase
   Realtime channel (`calls`); presence drives the online bar; ICE is STUN-only
   today (see Phase 3 in `ROADMAP.md` for TURN).
 - **Admin dashboard** — separate repo in `walltap-admin/` (Netlify Functions +
   service-role key), with its own README.
+
+## Auth model
+
+Sign-up asks for a **username and a password only**. There is no email field
+and no confirmation mail.
+
+Supabase Auth is email-only, so the username is mapped onto a synthetic
+address: `alice` → `alice@walltap.local`. Nothing is delivered there — the
+domain has no MX record, and none is needed, because the address exists only
+to satisfy Supabase's unique-identity constraint.
+
+Consequences worth knowing:
+
+- **No self-service password reset.** `walltap.local` cannot receive mail, so
+  "Forgot password?" tells the user to ask an admin, who generates a
+  single-use link from the admin dashboard
+  (`walltap-admin/netlify/functions/send-reset.js`). Passwords are bcrypt
+  hashes, so an admin cannot recover or read a forgotten one — minting a fresh
+  link is the only option, and it is the safe one.
+- **Turn off "Confirm email"** in Supabase → Auth → Email, otherwise sign-up
+  dead-ends waiting for a confirmation that will never arrive.
+- **Usernames are the identity.** `handle_new_user()` appends a numeric suffix
+  on collision (`alice` → `alice1`), so a taken name degrades to a different
+  name instead of a failed registration. The client cannot see the assigned
+  name until after sign-in, so tell people to pick something distinctive.
+- **Case-insensitive.** Usernames are lowercased before use; `Alice` and
+  `alice` are the same account.
+- Allowed characters: letters, numbers, `.`, `-`, `_`, 3–40 characters.
+- Accounts created before this change keep their real email and the ordinary
+  emailed reset link.
 
 ## Local development
 

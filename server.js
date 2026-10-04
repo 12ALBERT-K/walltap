@@ -70,23 +70,42 @@ const SCHEMA_SQL = `
   );
   ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 
+  -- Assigns profiles.username on signup.
+  --
+  -- username is UNIQUE, and a plain INSERT ... ON CONFLICT (id) DO NOTHING does
+  -- NOT cover that: a repeated display_name raises unique_violation, the trigger
+  -- aborts, and signup fails with an opaque "Database error creating new user".
+  -- Since usernames are the primary identity, that collision is the common case
+  -- rather than an edge case, so fall back to a numeric suffix until free.
   CREATE OR REPLACE FUNCTION public.handle_new_user()
   RETURNS trigger
   LANGUAGE plpgsql
   SECURITY DEFINER
   SET search_path = ''
   AS $$
+  DECLARE
+    base      text;
+    candidate text;
+    suffix    integer := 0;
   BEGIN
-    INSERT INTO public.profiles (id, username)
-    VALUES (
-      NEW.id,
-      COALESCE(
-        NULLIF(TRIM(NEW.raw_user_meta_data->>'display_name'), ''),
-        SPLIT_PART(COALESCE(NEW.email, ''), '@', 1),
-        'user'
-      )
-    )
-    ON CONFLICT (id) DO NOTHING;
+    -- A row may already exist (backfill, or a re-fired trigger). Leave it be.
+    IF EXISTS (SELECT 1 FROM public.profiles WHERE id = NEW.id) THEN
+      RETURN NEW;
+    END IF;
+
+    base := LEFT(COALESCE(
+      NULLIF(TRIM(NEW.raw_user_meta_data->>'display_name'), ''),
+      NULLIF(SPLIT_PART(COALESCE(NEW.email, ''), '@', 1), ''),
+      'user'
+    ), 40);
+
+    candidate := base;
+    WHILE EXISTS (SELECT 1 FROM public.profiles WHERE username = candidate) LOOP
+      suffix    := suffix + 1;
+      candidate := LEFT(base, 40 - length(suffix::text) - 1) || suffix::text;
+    END LOOP;
+
+    INSERT INTO public.profiles (id, username) VALUES (NEW.id, candidate);
     RETURN NEW;
   END;
   $$;
@@ -256,15 +275,21 @@ async function ensureBucket() {
 }
 
 // ── Multer config (in-memory; files stream straight to Storage) ─
+const ALLOWED_EXT = /\.(png|jpe?g|gif|webp|pdf|txt|md|csv|json|js|ts|py|html|css|mp3|wav|ogg|m4a|mp4|webm|zip)$/i;
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE_MB * 1024 * 1024, files: MAX_FILES },
   fileFilter: (req, file, cb) => {
-    const allowed = /\.(png|jpe?g|gif|webp|pdf|txt|md|csv|json|js|ts|py|html|css|mp3|wav|ogg|m4a|mp4|webm|zip)$/i;
-    if (allowed.test(path.extname(file.originalname))) {
+    if (ALLOWED_EXT.test(path.extname(file.originalname))) {
       cb(null, true);
     } else {
-      cb(new Error("File type not allowed"));
+      // Not a MulterError, so it reaches the generic branch below. statusCode is
+      // what turns this into a 400 instead of a 500 — a rejected upload is the
+      // caller's mistake, not a server fault, and the client renders the message.
+      const err = new Error("File type not allowed");
+      err.statusCode = 400;
+      cb(err);
     }
   }
 });
@@ -350,7 +375,18 @@ function rateLimit({ windowMs, max }) {
     next();
   };
 }
-const postLimiter = rateLimit({ windowMs: 60 * 1000, max: 30 });
+const postLimiter  = rateLimit({ windowMs: 60 * 1000, max: 30 });
+// Reads are cheap for the caller but not for us: every attachment on a page
+// costs a Storage signing round-trip, so an unbounded GET is the easiest way to
+// take the whole instance down. Generous enough for a client polling the feed.
+const getLimiter   = rateLimit({ windowMs: 60 * 1000, max: 120 });
+const refreshLimiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
+
+// Feed paging. The default page is deliberately small: it is also the number of
+// Storage signing calls a single page load can cost.
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE     = 200;
+const MAX_REFRESH_IDS   = 200;
 
 // ── Storage helpers ───────────────────────────────────────────
 function signUrl(name) {
@@ -365,9 +401,12 @@ function signUrl(name) {
 // ── Activity logging (failsafe — never breaks a user request) ──
 async function logEvent(event_type, user_id, metadata = {}) {
   try {
-    await supabase.from("events").insert({ event_type, user_id, metadata });
+    // supabase-js resolves with { error } rather than throwing, so a try/catch
+    // alone silently swallows every failure — check the result explicitly.
+    const { error } = await supabase.from("events").insert({ event_type, user_id, metadata });
+    if (error) console.error(`logEvent(${event_type}) failed:`, error.message);
   } catch (err) {
-    console.error("logEvent failed:", err.message);
+    console.error(`logEvent(${event_type}) threw:`, err.message);
   }
 }
 
@@ -390,10 +429,14 @@ async function rowToPost(row, files = []) {
   };
 }
 
-async function fetchFilesByPost() {
-  const { data, error } = await supabase.from("post_files").select("*");
-  if (error) throw error;
+// Only the post_files belonging to the page being rendered. Selecting the whole
+// table is what used to hit PostgREST's 1000-row ceiling and silently truncate
+// attachments on large boards.
+async function fetchFilesByPost(postIds) {
   const byId = new Map();
+  if (!postIds.length) return byId;
+  const { data, error } = await supabase.from("post_files").select("*").in("post_id", postIds);
+  if (error) throw error;
   for (const f of data) {
     const list = byId.get(f.post_id) || [];
     list.push(f);
@@ -403,17 +446,75 @@ async function fetchFilesByPost() {
 }
 
 // ── GET /api/posts ────────────────────────────────────────────
-app.get("/api/posts", requireAuth, async (req, res) => {
+// Paged: ?limit=<n> (default 50, max 200) and ?before=<timestamp> for older
+// pages. The newest page comes back by default — ordering ascending and then
+// truncating would show a new visitor the 50 *oldest* posts on the board.
+// Response stays a plain array, oldest-first, to match the bottom-anchored feed.
+app.get("/api/posts", getLimiter, requireAuth, async (req, res) => {
   try {
-    const [{ data: rows, error: postErr }, filesById] = await Promise.all([
-      supabase.from("posts").select("*").is("deleted_at", null).order("timestamp", { ascending: true }),
-      fetchFilesByPost()
-    ]);
+    const rawLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(rawLimit, MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+
+    const before = Number.parseInt(req.query.before, 10);
+    const hasBefore = Number.isFinite(before) && before > 0;
+
+    let q = supabase
+      .from("posts")
+      .select("*")
+      .is("deleted_at", null)
+      .order("timestamp", { ascending: false })
+      .limit(limit);
+    if (hasBefore) q = q.lt("timestamp", before);
+
+    const { data: rows, error: postErr } = await q;
     if (postErr) throw postErr;
+    rows.reverse();
+
+    const filesById = await fetchFilesByPost(rows.map(r => r.id));
     res.json(await Promise.all(rows.map(row => rowToPost(row, filesById.get(row.id) || []))));
   } catch (err) {
-    console.error("GET /api/posts failed:", err.message);
+    console.error("GET /api/posts failed:", err.stack || err.message);
     res.status(500).json({ error: "Failed to load posts." });
+  }
+});
+
+// ── POST /api/posts/refresh-files ─────────────────────────────
+// Signed URLs expire (SIGNED_URL_TTL_SECONDS, default 7 days) and the browser
+// only learns a URL is dead when the request 403s. The feed calls this to mint
+// fresh URLs for posts whose attachments stopped loading, so old attachments
+// recover instead of breaking permanently.
+app.post("/api/posts/refresh-files", refreshLimiter, requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids)
+      ? [...new Set(req.body.ids.filter(v => typeof v === "string"))].slice(0, MAX_REFRESH_IDS)
+      : [];
+    if (!ids.length) return res.json({ files: [] });
+
+    const { data: rows, error: postErr } = await supabase
+      .from("posts")
+      .select("id")
+      .in("id", ids)
+      .is("deleted_at", null);
+    if (postErr) throw postErr;
+    if (!rows.length) return res.json({ files: [] });
+
+    const { data: fileRows, error: fileErr } = await supabase
+      .from("post_files")
+      .select("post_id, file_name")
+      .in("post_id", rows.map(r => r.id));
+    if (fileErr) throw fileErr;
+
+    const files = await Promise.all((fileRows || []).map(async f => ({
+      post_id: f.post_id,
+      filename: f.file_name,
+      url: await signUrl(f.file_name)
+    })));
+    res.json({ files });
+  } catch (err) {
+    console.error("POST /api/posts/refresh-files failed:", err.message);
+    res.status(500).json({ error: "Failed to refresh attachments." });
   }
 });
 
@@ -506,12 +607,24 @@ app.post("/api/posts", postLimiter, requireAuth, upload.array("files", MAX_FILES
 app.delete("/api/posts/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
 
-  const { data: row, error: getErr } = await supabase.from("posts").select("*").eq("id", id).maybeSingle();
+  // deleted_at IS NULL: a post the caller already erased is gone as far as they
+  // are concerned, so re-deleting must 404 rather than re-stamp deleted_at,
+  // re-log message_deleted and re-broadcast a delete for a vanished post.
+  const { data: row, error: getErr } = await supabase
+    .from("posts")
+    .select("*")
+    .eq("id", id)
+    .is("deleted_at", null)
+    .maybeSingle();
   if (getErr) return res.status(500).json({ error: "Failed to delete post." });
   if (!row)   return res.status(404).json({ error: "Post not found." });
   if (row.author_id && row.author_id !== req.user.id) {
     return res.status(403).json({ error: "You can only erase your own posts." });
   }
+  // Already gone. Answer 404 rather than re-applying, so a retried request
+  // cannot overwrite the original deleted_at (the audit trail) or fire a
+  // second message_deleted event / post-deleted broadcast.
+  if (row.deleted_at) return res.status(404).json({ error: "Post not found." });
 
   const { error: softErr } = await supabase
     .from("posts")
@@ -553,11 +666,19 @@ app.use((err, req, res, next) => {
     if (err.code === "LIMIT_FILE_SIZE") {
       return res.status(413).json({ error: `File too large. Maximum size is ${MAX_FILE_SIZE_MB} MB.` });
     }
+    if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") {
+      return res.status(400).json({ error: `Too many files. Maximum is ${MAX_FILES}.` });
+    }
     return res.status(400).json({ error: err.message });
   }
   if (err) {
-    const msg = err instanceof Error ? err.message : "Internal server error.";
-    return res.status(500).json({ error: msg });
+    // Errors we raised deliberately (e.g. a rejected upload) carry a status.
+    // Anything else is a genuine fault: log the detail, return a generic 500 so
+    // internal messages (and anything in them) never reach the client.
+    const status = Number(err.statusCode) || 500;
+    if (status >= 500) console.error("Unhandled request error:", err.message);
+    const msg = status < 500 && err instanceof Error ? err.message : "Internal server error.";
+    return res.status(status).json({ error: msg });
   }
   next();
 });

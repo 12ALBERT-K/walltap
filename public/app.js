@@ -20,6 +20,8 @@ const supabase = (window.supabase && SUPABASE_URL && SUPABASE_ANON_KEY)
 // ── DOM references ────────────────────────────────────────────
 const feed        = document.getElementById("feed");
 const feedEmpty   = document.getElementById("feed-empty");
+const feedMore    = document.getElementById("feed-more");
+const loadOlderBtn = document.getElementById("load-older-btn");
 const input       = document.getElementById("post-input");
 const postBtn     = document.getElementById("post-btn");
 const micBtn      = document.getElementById("mic-btn");
@@ -28,7 +30,6 @@ const fileInput   = document.getElementById("file-input");
 const fileLabel   = document.getElementById("file-label");
 const authOverlay = document.getElementById("auth-overlay");
 const authSubtitle = document.getElementById("auth-subtitle");
-const authDisplay = document.getElementById("auth-display");
 const authEmail   = document.getElementById("auth-email");
 const authPass    = document.getElementById("auth-password");
 const authBtn     = document.getElementById("auth-btn");
@@ -178,6 +179,69 @@ function logEvent(event_type, metadata = {}) {
 
 
 // ============================================================
+//  Attachment URL recovery
+//  Storage signed URLs expire (default 7 days). A post older than the TTL
+//  renders with dead attachments and, without this, stays broken forever.
+//  A failed load/click asks the server to re-sign that post's files and swaps
+//  the fresh URLs in. Each file is only retried once so a genuinely missing
+//  object cannot loop.
+// ============================================================
+const attachmentWatchers = new Map();   // "postId:filename" -> [elements]
+const refreshAttempts    = new Set();   // keys already refreshed once
+
+function watchAttachment(el, postId, file, attr) {
+  const key = `${postId}:${file.filename}`;
+  if (!attachmentWatchers.has(key)) attachmentWatchers.set(key, []);
+  attachmentWatchers.get(key).push({ el, attr });
+
+  const recover = async (event) => {
+    if (refreshAttempts.has(key)) return;
+    const urls = await refreshAttachmentUrls([postId]);
+    const fresh = urls.get(file.filename);
+    if (!fresh) return;   // file row is gone, or the object is really missing
+    refreshAttempts.add(key);
+    const targets = attachmentWatchers.get(key) || [];
+    targets.forEach(({ el: node, attr: a }) => {
+      node.setAttribute(a, fresh);
+      if (a === "src" && typeof node.load === "function") node.load();
+    });
+    if (event && event.type === "click") {
+      event.preventDefault();
+      window.open(fresh, "_blank", "noopener");
+    }
+  };
+
+  if (attr === "href") {
+    el.addEventListener("click", event => {
+      if (refreshAttempts.has(key)) return;   // already fresh: let it through
+      event.preventDefault();
+      recover(event);
+    });
+  } else {
+    el.addEventListener("error", () => { recover(); });
+  }
+}
+
+async function refreshAttachmentUrls(postIds) {
+  const out = new Map();
+  if (!postIds.length) return out;
+  try {
+    const res = await apiFetch("/api/posts/refresh-files", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: postIds }),
+    });
+    if (!res.ok) return out;
+    const data = await parseJsonSafe(res);
+    (data.files || []).forEach(f => { if (f.url) out.set(f.filename, f.url); });
+  } catch (err) {
+    console.error("refresh-files failed:", err);
+  }
+  return out;
+}
+
+
+// ============================================================
 //  createPostElement(post)
 //  Builds a complete <section class="post"> DOM node.
 // ============================================================
@@ -218,18 +282,21 @@ function createPostElement(post) {
         img.alt = file.original;
         a.appendChild(img);
         bubble.appendChild(a);
+        watchAttachment(img, post.id, file, "src");
       } else if (mime.startsWith("audio/")) {
         const audio = document.createElement("audio");
         audio.classList.add("post-audio");
         audio.controls = true;
         audio.src = url;
         bubble.appendChild(audio);
+        watchAttachment(audio, post.id, file, "src");
       } else if (mime.startsWith("video/")) {
         const video = document.createElement("video");
         video.classList.add("post-video");
         video.controls = true;
         video.src = url;
         bubble.appendChild(video);
+        watchAttachment(video, post.id, file, "src");
       } else {
         const a = document.createElement("a");
         a.classList.add("post-file");
@@ -242,6 +309,7 @@ function createPostElement(post) {
         a.appendChild(icon);
         a.appendChild(nameEl);
         bubble.appendChild(a);
+        watchAttachment(a, post.id, file, "href");
       }
     });
   }
@@ -330,13 +398,55 @@ function appendPost(section, scroll = true) {
   if (scroll) scrollToBottom(true);
 }
 
+// ============================================================
+//  rebuildDecorations()
+//  Recomputes date separators and same-author grouping for the whole
+//  feed. Prepending an older page changes what the *first* post groups
+//  with and where the earliest separator belongs, which incremental
+//  chip/grouping helpers get wrong; recomputing is cheap at these sizes.
+// ============================================================
+function rebuildDecorations() {
+  const sections = [...feed.querySelectorAll("section.post")];
+  feed.querySelectorAll(".date-chip").forEach(chip => chip.remove());
+
+  let prevTs = null;
+  let prevAuthor = null;
+  for (const section of sections) {
+    const ts = Number(section.dataset.ts);
+    if (prevTs === null || dateKey(ts) !== dateKey(prevTs)) {
+      const chip = document.createElement("div");
+      chip.classList.add("date-chip");
+      chip.textContent = dateLabel(ts);
+      feed.insertBefore(chip, section);
+    }
+    if (prevAuthor !== null && prevAuthor === section.dataset.author) {
+      section.classList.add("grouped");
+    } else {
+      section.classList.remove("grouped");
+    }
+    prevTs = ts;
+    prevAuthor = section.dataset.author;
+  }
+}
+
 
 // ============================================================
-//  loadPosts()
+//  Feed paging
+//  GET /api/posts returns one page, newest page first by default.
+//  PAGE_SIZE matches the server default so "the page came back full"
+//  reliably means older posts exist.
 // ============================================================
+const PAGE_SIZE = 50;
+let hasOlderPosts = false;
+let loadingOlder  = false;
+
+function syncOlderControl() {
+  if (feedMore) feedMore.hidden = !hasOlderPosts;
+}
+
 async function loadPosts() {
   try {
-    const res = await apiFetch("/api/posts");
+    const res = await apiFetch(`/api/posts?limit=${PAGE_SIZE}`);
     if (!res.ok) {
       const { error } = await parseJsonSafe(res);
       throw new Error(error || `Server error ${res.status}`);
@@ -345,15 +455,61 @@ async function loadPosts() {
 
     posts.forEach(post => {
       if (feed.querySelector(`[data-id="${post.id}"]`)) return;
-      const section = createPostElement(post);
-      appendPost(section, false);
+      feed.appendChild(createPostElement(post));
     });
 
+    hasOlderPosts = posts.length === PAGE_SIZE;
+    syncOlderControl();
+    rebuildDecorations();
+    syncEmptyState();
     scrollToBottom(false);
 
   } catch (err) {
     console.error("loadPosts failed:", err);
     showToast("Could not load posts — is the server running?");
+  }
+}
+
+async function loadOlderPosts() {
+  if (loadingOlder || !hasOlderPosts) return;
+  const oldest = feed.querySelector("section.post");
+  if (!oldest) return;
+
+  loadingOlder = true;
+  loadOlderBtn.disabled = true;
+  loadOlderBtn.textContent = "Loading…";
+
+  try {
+    const before = Number(oldest.dataset.ts);
+    const res = await apiFetch(`/api/posts?limit=${PAGE_SIZE}&before=${before}`);
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const posts = await parseJsonSafe(res);
+
+    const fresh = posts.filter(post => !feed.querySelector(`[data-id="${post.id}"]`));
+    // Keep the viewport anchored: prepending shifts everything down by the new
+    // content height, so compensate or the page jumps under the reader.
+    const heightBefore = document.documentElement.scrollHeight;
+    const topBefore    = window.scrollY;
+
+    const anchor = feed.querySelector("section.post");
+    fresh.forEach(post => feed.insertBefore(createPostElement(post), anchor));
+
+    if (fresh.length) {
+      rebuildDecorations();
+      syncEmptyState();
+      window.scrollTo(window.scrollX, topBefore + (document.documentElement.scrollHeight - heightBefore));
+    }
+
+    hasOlderPosts = posts.length === PAGE_SIZE && fresh.length > 0;
+    syncOlderControl();
+
+  } catch (err) {
+    console.error("loadOlderPosts failed:", err);
+    showToast("Could not load older posts.");
+  } finally {
+    loadingOlder = false;
+    loadOlderBtn.disabled = false;
+    loadOlderBtn.textContent = "Load older posts";
   }
 }
 
@@ -629,6 +785,7 @@ function clearRecUi() {
 // ── Composer event listeners ──────────────────────────────────
 postBtn.addEventListener("click", submitPost);
 micBtn.addEventListener("click", toggleMic);
+loadOlderBtn.addEventListener("click", loadOlderPosts);
 
 input.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -695,6 +852,36 @@ input.addEventListener("input", () => {
 
 // ── Auth helpers ──────────────────────────────────────────────
 
+// Accounts are username-first. Supabase Auth is email-only, so a username is
+// mapped onto a synthetic address in a domain that can never receive mail
+// (no MX record). Real emails typed by legacy users are passed through
+// untouched, so existing accounts keep working. Because a synthetic address
+// has no inbox, recovery for those accounts is admin-mediated — see
+// walltap-admin/netlify/functions/send-reset.js.
+const USERNAME_DOMAIN = "walltap.local";
+const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,39}$/;
+
+function normaliseLogin(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return { error: "Enter your username." };
+  if (value.includes("@")) {
+    const email = value.toLowerCase();
+    return {
+      email,
+      username: email.split("@")[0],
+      // Catch someone pasting the synthetic address itself (the admin
+      // dashboard shows these), which would otherwise be treated as a real
+      // inbox and silently dead-end on the reset path.
+      synthetic: email.endsWith(`@${USERNAME_DOMAIN}`)
+    };
+  }
+  const username = value.toLowerCase();
+  if (!USERNAME_RE.test(username)) {
+    return { error: "Usernames are 3-40 characters: letters, numbers, dot, dash or underscore." };
+  }
+  return { email: `${username}@${USERNAME_DOMAIN}`, username, synthetic: true };
+}
+
 function displayNameOf(user) {
   const md = user.user_metadata || {};
   return md.display_name || md.username || (user.email || "").split("@")[0] || "user";
@@ -716,7 +903,6 @@ function setMainAuthVisible(v) {
   authSubtitle.classList.toggle("hidden", !v);
   authEmail.classList.toggle("hidden", !v);
   authPass.classList.toggle("hidden", !v);
-  authDisplay.classList.toggle("hidden", !v || isLogin);
   authBtn.classList.toggle("hidden", !v);
   authError.classList.toggle("hidden", !v);
   authToggle.classList.toggle("hidden", !v);
@@ -727,7 +913,6 @@ function syncAuthToggle() {
   authBtn.textContent    = isLogin ? "Sign in" : "Create account";
   authToggle.textContent = isLogin ? "No account? Create one" : "Already have an account? Sign in";
   authPass.setAttribute("autocomplete", isLogin ? "current-password" : "new-password");
-  authDisplay.classList.toggle("hidden", isLogin);
 }
 
 function showSignInForm() {
@@ -741,7 +926,7 @@ function showResetRequest() {
   setMainAuthVisible(false);
   resetRequestGroup.classList.remove("hidden");
   recoveryPanel.classList.add("hidden");
-  resetNote.textContent = "Enter your email and we'll send a reset link.";
+  resetNote.textContent = "Enter your username and we'll tell you how to get back in.";
   resetError.textContent = "";
 }
 
@@ -790,12 +975,15 @@ async function checkAuth() {
 
 async function handleAuth() {
   if (!supabase) return;
-  const email    = authEmail.value.trim();
   const password = authPass.value;
-  const display  = authDisplay.value.trim();
+  const login    = normaliseLogin(authEmail.value);
 
-  if (!email || !password) {
-    authError.textContent = "Email and password are required.";
+  if (login.error) {
+    authError.textContent = login.error;
+    return;
+  }
+  if (!password) {
+    authError.textContent = "Enter your password.";
     return;
   }
 
@@ -805,15 +993,17 @@ async function handleAuth() {
 
   try {
     if (isLogin) {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email: login.email, password });
       if (error) throw error;
       applySession(data.session);
       enterApp();
     } else {
+      // display_name drives profiles.username via the auth.users trigger, so the
+      // username chosen here is the name shown on posts.
       const { data, error } = await supabase.auth.signUp({
-        email,
+        email: login.email,
         password,
-        options: { data: { display_name: display || (email.split("@")[0]) } }
+        options: { data: { display_name: login.username } }
       });
       if (error) throw error;
       if (data.session) {
@@ -825,11 +1015,37 @@ async function handleAuth() {
       }
     }
   } catch (err) {
-    authError.textContent = err.message || "Something went wrong.";
+    authError.textContent = friendlyAuthError(err, isLogin);
   } finally {
     authBtn.disabled = false;
     syncAuthToggle();
   }
+}
+
+// Supabase errors leak the email-shaped identity ("User already registered"),
+// which is meaningless against a username login and tells an attacker whether a
+// name is taken. Map them to something a person can act on.
+function friendlyAuthError(err, wasLogin) {
+  const msg = (err && err.message) || "Something went wrong.";
+  if (/already registered|already been registered/i.test(msg)) {
+    return "That username is taken. Try signing in, or pick another.";
+  }
+  if (/invalid login credentials/i.test(msg)) {
+    return "Wrong username or password.";
+  }
+  if (/password should be at least/i.test(msg)) {
+    return "Password must be at least 6 characters.";
+  }
+  if (/email rate limit|too many requests|rate_limit/i.test(msg)) {
+    return "Too many attempts. Wait a minute and try again.";
+  }
+  if (/failed to fetch|network/i.test(msg)) {
+    return "Could not reach the server. Check your connection.";
+  }
+  if (!wasLogin && /signups not allowed|not allowed/i.test(msg)) {
+    return "Signups are closed on this server.";
+  }
+  return msg;
 }
 
 async function handleLogout() {
@@ -841,21 +1057,34 @@ async function handleLogout() {
 }
 
 async function handleResetRequest() {
-  const email = resetEmail.value.trim();
-  if (!email) return;
+  const raw = resetEmail.value.trim();
+  if (!raw) return;
   if (!supabase) { resetError.textContent = "Supabase is not configured."; return; }
+
+  const login = normaliseLogin(raw);
+  if (login.error) { resetError.textContent = login.error; return; }
+
+  // A synthetic address has no inbox, so Supabase's email would bounce and the
+  // user would wait forever. Say who can actually help instead.
+  if (login.synthetic) {
+    resetError.textContent = "";
+    resetNote.textContent =
+      `"${login.username}" can't receive email. Ask an admin to send you a reset link — ` +
+      `they can generate one from the admin dashboard.`;
+    return;
+  }
 
   resetRequestBtn.disabled    = true;
   resetRequestBtn.textContent = "Sending…";
   try {
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    const { error } = await supabase.auth.resetPasswordForEmail(login.email, {
       redirectTo: window.location.origin + "/?recovery=1"
     });
     if (error) throw error;
     resetNote.textContent = "If an account exists for that email, a reset link has been sent.";
     resetError.textContent = "";
   } catch (err) {
-    resetError.textContent = err.message || "Something went wrong.";
+    resetError.textContent = friendlyAuthError(err, true);
   } finally {
     resetRequestBtn.disabled    = false;
     resetRequestBtn.textContent = "Send reset link";
@@ -1162,6 +1391,27 @@ function declineCall() {
 }
 
 // ── Peer connection ──────────────────────────────────────────
+// With STUN-only ICE a peer behind a symmetric NAT or a restrictive corporate
+// firewall can never produce a candidate pair. The browser then sits in
+// "connecting" indefinitely with the camera still recording, so arm a deadline
+// for the connect phase and fail it loudly instead of hanging.
+const CONNECT_TIMEOUT_MS = 30000;
+let connectTimer = null;
+
+function armConnectTimeout() {
+  clearConnectTimeout();
+  connectTimer = setTimeout(() => {
+    connectTimer = null;
+    if (callState !== "connecting") return;
+    showToast("Could not connect — the network blocked the call.");
+    endCall({ reason: "connect-timeout" });
+  }, CONNECT_TIMEOUT_MS);
+}
+
+function clearConnectTimeout() {
+  if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+}
+
 function createPeerConnection() {
   pc = new RTCPeerConnection({ iceServers: CALL_ICE });
   pc.onicecandidate = (e) => {
@@ -1175,11 +1425,23 @@ function createPeerConnection() {
       callRemoteVideo.srcObject = remoteStream;
       callFallback.classList.add("hidden");
       if (callState !== "active") { callState = "active"; startCallTimer(); }
+      clearConnectTimeout();
     }
   };
   pc.onconnectionstatechange = () => {
     const st = pc.connectionState;
+    if (st === "connected") clearConnectTimeout();
     if ((st === "failed" || st === "closed") && inCall()) {
+      clearConnectTimeout();
+      showToast("The call dropped.");
+      teardownCall();
+    }
+  };
+  // "disconnected" is transient on a normal network, but if ICE has genuinely
+  // given up it only reports here on some browsers.
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === "failed" && inCall()) {
+      clearConnectTimeout();
       showToast("The call dropped.");
       teardownCall();
     }
@@ -1204,6 +1466,7 @@ function handleCallAccept(payload) {
   ringTimer = null;
   callState = "connecting";
   setCallStateLabel("Connecting…");
+  armConnectTimeout();
   createPeerConnection();
   pc.createOffer()
     .then((offer) => pc.setLocalDescription(offer))
@@ -1324,6 +1587,7 @@ function endCall(opts = {}) {
 function teardownCall() {
   clearTimeout(ringTimer);
   ringTimer = null;
+  clearConnectTimeout();
   stopRing();
   stopCallTimer();
 
@@ -1332,6 +1596,7 @@ function teardownCall() {
       pc.onicecandidate = null;
       pc.ontrack = null;
       pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
       pc.close();
     } catch (_) {}
     pc = null;

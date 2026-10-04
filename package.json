@@ -11,7 +11,8 @@
     "dev": "npx nodemon server.js",
     "provision-admin": "node scripts/provision-admin.js",
     "backfill-profiles": "node scripts/backfill-profiles.js",
-    "preflight": "node scripts/preflight.js"
+    "preflight": "node scripts/preflight.js",
+    "e2e": "node scripts/e2e.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

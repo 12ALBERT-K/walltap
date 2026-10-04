@@ -1,0 +1,28 @@
+ picked all four — good order: test calls locally first, then TURN, then push + deploy. Starting local setup and checking which CLIs are available:
+# Todos
+[•] Manual 2-browser WebRTC call test (local): start server, guide user, watch logs
+[ ] Add TURN relay to CALL_ICE once user provides Cloudflare Calls / Twilio creds
+[ ] Push walltap + walltap-admin git remotes once URLs provided
+[ ] Deploy: Render blueprint + Netlify admin dashboard
+$ foreach ($c in 'gh','netlify','render') { $cmd = Get-Command $c -ErrorAction SilentlyContinue; if ($cmd) { "$c : $($cmd.Version)" } else { "$c : NOT INSTALLED" } }
+gh : NOT INSTALLED
+netlify : 
+render : NOT INSTALLED
+$ $busy = Get-NetTCPConnection -LocalPort 3999 -State Listen -ErrorAction SilentlyContinue; if ($busy) { "port 3999 in use by PID $($busy.OwningProcess)" } else { "port 3999 free" }
+port 3999 free
+Thought: 933ms
+Tools: gh not installed, render not installed, netlify present (version blank — alias? maybe it's a package installed as global npm. Let me check what netlify resolves to). Port 3999 free.
+
+Let me check netlify path/version more precisely, and start the server for the call test.
+$ $n = Get-Command netlify -ErrorAction SilentlyContinue; "$($n.Source)"; netlify --version 2>&1 | Select-Object -First 1
+C:\Users\Albert\AppData\Roaming\npm\netlify.ps1
+netlify-cli/27.4.0 win32-x64 node-v22.19.0
+$out = 'C:\Users\Albert\AppData\Local\Temp\opencode\walltap-out.log'; $err = 'C:\Users\Albert\AppData\Local\Temp\opencode\walltap-err.log'; Remove-Item $out,$err -ErrorAction SilentlyContinue; $env:PORT='3999'; $p = Start-Process node -ArgumentList 'server.js' -WorkingDirectory 'C:\Users\Albert\Documents\projects\whatapp' -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 12; $dead = $p.HasExited; Remove-Item Env:\PORT -ErrorAction SilentlyContinue; "$($p.Id.ToString())"; if ($dead) { 'SERVER EXITED'; Get-Content $out; Get-Content $err } else { Get-Content $out; try { $r = Invoke-WebRequest -Uri 'http://localhost:3999/api/posts' -UseBasicParsing -TimeoutSec 10; "api: $($r.StatusCode)" } catch { "api: $($_.Exception.Response.StatusCode.value__)" } }
+17344
+   Schema        �+' ensured
+   Storage       �+' bucket "uploads" ready (private)
+
+�o�  Walltap running �+' http://localhost:3999
+   Backend       �+' Supabase configured
+
+api: 401
