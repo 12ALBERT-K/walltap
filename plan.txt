@@ -1,28 +1,335 @@
- picked all four — good order: test calls locally first, then TURN, then push + deploy. Starting local setup and checking which CLIs are available:
-# Todos
-[•] Manual 2-browser WebRTC call test (local): start server, guide user, watch logs
-[ ] Add TURN relay to CALL_ICE once user provides Cloudflare Calls / Twilio creds
-[ ] Push walltap + walltap-admin git remotes once URLs provided
-[ ] Deploy: Render blueprint + Netlify admin dashboard
-$ foreach ($c in 'gh','netlify','render') { $cmd = Get-Command $c -ErrorAction SilentlyContinue; if ($cmd) { "$c : $($cmd.Version)" } else { "$c : NOT INSTALLED" } }
-gh : NOT INSTALLED
-netlify : 
-render : NOT INSTALLED
-$ $busy = Get-NetTCPConnection -LocalPort 3999 -State Listen -ErrorAction SilentlyContinue; if ($busy) { "port 3999 in use by PID $($busy.OwningProcess)" } else { "port 3999 free" }
-port 3999 free
-Thought: 933ms
-Tools: gh not installed, render not installed, netlify present (version blank — alias? maybe it's a package installed as global npm. Let me check what netlify resolves to). Port 3999 free.
+================================================================================
+WALLTAP — SESSION HANDOVER
+Last updated: 2026-10-04 (end of session)
+Live: https://walltap.onrender.com  ·  https://walltap-admin.netlify.app
 
-Let me check netlify path/version more precisely, and start the server for the call test.
-$ $n = Get-Command netlify -ErrorAction SilentlyContinue; "$($n.Source)"; netlify --version 2>&1 | Select-Object -First 1
-C:\Users\Albert\AppData\Roaming\npm\netlify.ps1
-netlify-cli/27.4.0 win32-x64 node-v22.19.0
-$out = 'C:\Users\Albert\AppData\Local\Temp\opencode\walltap-out.log'; $err = 'C:\Users\Albert\AppData\Local\Temp\opencode\walltap-err.log'; Remove-Item $out,$err -ErrorAction SilentlyContinue; $env:PORT='3999'; $p = Start-Process node -ArgumentList 'server.js' -WorkingDirectory 'C:\Users\Albert\Documents\projects\whatapp' -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 12; $dead = $p.HasExited; Remove-Item Env:\PORT -ErrorAction SilentlyContinue; "$($p.Id.ToString())"; if ($dead) { 'SERVER EXITED'; Get-Content $out; Get-Content $err } else { Get-Content $out; try { $r = Invoke-WebRequest -Uri 'http://localhost:3999/api/posts' -UseBasicParsing -TimeoutSec 10; "api: $($r.StatusCode)" } catch { "api: $($_.Exception.Response.StatusCode.value__)" } }
-17344
-   Schema        �+' ensured
-   Storage       �+' bucket "uploads" ready (private)
+START HERE: LIVE STATE (confirm nothing moved since 37b69d8 went live) →
+WORKLIST below → then the numbered sections §1-§8 for detail behind each item.
+================================================================================
 
-�o�  Walltap running �+' http://localhost:3999
-   Backend       �+' Supabase configured
+## TL;DR — WHERE THINGS STAND
 
-api: 401
+Both sites are deployed and the backend is verified working end-to-end (41/41 API
+tests pass against the live deployment). The frontend had a fatal script bug
+last hour which is now fixed and live.
+
+Two things still block "done":
+  1. Rotate the Render + Supabase API tokens (both are leaked in chat history).
+  2. Render's auto-deploy is NOT firing — pushes sit undeployed until triggered.
+  3. CHAT_APP_URL is missing on the Netlify admin site (section 3).
+
+--------------------------------------------------------------------------------
+## LIVE STATE — RE-VERIFIED 2026-10-04 (do this first, it may have moved)
+
+  Render  deploy dep-db1bk11srm7s73auprm0  status LIVE  commit 37b69d8
+          https://walltap.onrender.com
+            GET /config.js  -> 200, and now returns the REAL SUPABASE_URL +
+              anon key (it returned empty strings before the env vars landed).
+              This is the single best one-line "is it actually configured" check.
+            GET /           -> 200 (42 KB of HTML)
+            GET /api/posts  -> 401 {"error":"Authentication required."}
+              A 401 here is GOOD: it proves ready=true, i.e. initSchema() and
+              ensureBucket() both succeeded against Postgres + Storage. If the
+              app were half-configured you would get 503 "Server is not
+              configured yet." instead. 404/401 != broken.
+            Free tier spins down after ~15 min idle, so the first request after
+            a pause can take ~30s. A slow first hit is not a failure.
+
+  Netlify deploy 6ac29c054b47c8ede8dfc923  state ready  published 18:34
+          https://walltap-admin.netlify.app  -> GET / returns 200
+          4 functions bundled, including send-reset.
+
+  Supabase  project ref hbcsujvcizcnpgxkcxuu (eu-west-1, ACTIVE_HEALTHY)
+            mailer_autoconfirm = TRUE   (Confirm email is OFF)
+            site_url           = https://walltap.onrender.com
+            uri_allow_list     = https://walltap.onrender.com,
+                                https://walltap-admin.netlify.app,
+                                http://localhost:3000, http://localhost:8888
+            GOTCHA when scripting this: uri_allow_list must be ONE string, and
+            it must be COMMA-separated. Newline-separated silently collapses to
+            a single concatenated garbage URL, and an array is rejected with
+            "expected string, received array". The field is NOT called
+            redirect_uri — patching that name is a silent no-op.
+
+  Git HEAD main repo  37b69d8   ·   admin repo  6af955e
+
+--------------------------------------------------------------------------------
+## WORKLIST — PICK THESE UP NEXT TIME
+
+Ordered by urgency. Detail for each is in the numbered section noted.
+
+BLOCKING / SECURITY
+  [ ] 1. Rotate Render API key .................. §1  (you do it, then I redeploy)
+  [ ] 2. Rotate Supabase PAT ................... §1  (update Render + Netlify, then revoke)
+  [ ] 3. Install Render GitHub App on repo ..... §2  (auto-deploy never worked)
+
+UNVERIFIED — highest product risk
+  [ ] 4. Verify admin dashboard 200 path ........ §3  (only ever saw the 401 LOCK;
+                                                  needs the admin password, which
+                                                  is NOT recoverable from here)
+  [ ] 5. Sign up through the real browser UI .... §3  (API proven, clicks not)
+  [ ] 6. 2-browser WebRTC call test .............. §3  (never done at all)
+
+CODE FIXES — fully autonomous, I can do these with no input
+  [ ] 7.  Uploads return 400 not 500 ............ §6  (bad types show generic error)
+  [ ] 8.  logEvent silent failures .............. §6  (try/catch never fires,
+                                                  supabase-js returns {error})
+  [ ] 9.  backfill-profiles pagination .......... §6  (DANGEROUS past ~1000
+                                                  profiles: admin can be reset
+                                                  to is_admin=false)
+  [ ] 10. Remove dead deleted_at check ......... §6  (server.js ~684, unreachable)
+
+OPTIONAL / BLOCKED ON CREDITS OR INSTALLS
+  [ ] 11. Add TURN relay for calls .............. §6  (needs Cloudflare/Twilio creds)
+  [ ] 12. Install Playwright Chromium ........... §3  (so UI can be tested for real)
+  [ ] 13. Rate-limiter test against deploy ...... §3  (skipped remotely by design)
+  [ ] 14. Reclaim username "admin" ............. §4  (needs old acct deleted first)
+  [ ] 15. Delete admin@walltap.local ............ §4  (demoted, still exists)
+
+--------------------------------------------------------------------------------
+## 1. DO THIS FIRST (security)
+
+[ ] ROTATE THE RENDER TOKEN — dashboard.render.com → Account Settings → API Keys
+    Create new → update it → revoke the old one.
+[ ] ROTATE THE SUPABASE TOKEN — supabase.com/dashboard/account/tokens
+    Generate new → then update it in BOTH Render and Netlify (the Netlify env
+    var is what the admin functions use) → revoke the old one.
+    Order matters: update Render + Netlify FIRST, then revoke, or you break prod.
+
+Both leaked in this session's chat transcript. They grant full project access.
+
+NOTE: I did not rotate these myself — rotating changes production env vars and
+revoking first would break the live app, so it needs your confirmation.
+
+--------------------------------------------------------------------------------
+## 2. DO THIS SECOND (auto-deploy is broken — ROOT CAUSE NOW CONFIRMED)
+
+DIAGNOSIS: Render's GitHub App is NOT installed on this repo, so Render never
+receives push events. Evidence gathered:
+  * Service config is all CORRECT — branch=master, autoDeploy=yes,
+    autoDeployTrigger=commit, suspended=not_suspended, suspenders=[],
+    repo=https://github.com/12ALBERT-K/walltap. The config is not the problem.
+  * ALL 6 commits checked (aed5e86, 26b3a47, a06801e, 0a91414, acbd7a5, 37b69d8)
+    have ZERO GitHub status contexts and ZERO check-runs. A working Render
+    integration would post status checks on every build.
+  * Every deploy in history has trigger=api, never trigger=commit.
+So auto-deploy has NEVER worked here. Everything currently live only reached
+production because a deploy was triggered by API. (Correction: an earlier note
+in this session claimed Render redeploys automatically — that was wrong.)
+
+[ ] FIX: install Render's GitHub App on 12ALBERT-K/walltap
+    Requires a browser + your GitHub account — I cannot do this.
+    Either: Render dashboard → Connect → reconnect GitHub, or
+    github.com → Settings → Applications → Installed GitHub Apps → Render →
+    Configure → add access to the walltap repo (All repositories is easiest).
+    Verify afterwards by pushing a no-op commit and confirming a build starts
+    on its own within ~1 min.
+
+[ ] UNTIL FIXED: always trigger deploys manually, then confirm.
+      POST https://api.render.com/v1/services/srv-db18md1srm7s73ajatb0/deploys
+      (Body: {})   Header: Authorization: Bearer <RENDER_API_KEY>
+    Optional: append ?clearCache=true to force a clean rebuild.
+    Then confirm the LIVE commit id matches local HEAD before believing any
+    change is deployed. Do not assume a push went live.
+
+    Service ids / names (fill these in rather than hunting the dashboard):
+      chat app  Render  name "walltap"    id srv-db18md1srm7s73ajatb0
+                url https://walltap.onrender.com   plan free, region virginia
+                branch master, autoDeploy yes, healthCheckPath "/"
+      old dead  Render  name "whatapp"    id srv-d9n0gtu417fc73cdd6l0
+                (suspended, points at the OLD repo 12ALBERT-K/whatapp — safe to
+                 ignore or delete; it is not walltap)
+      admin     Netlify name "walltap-admin"
+                id 83591264-d13d-4099-9d45-495b860b495b
+                url https://walltap-admin.netlify.app
+
+--------------------------------------------------------------------------------
+## 3. UNVERIFIED — NEEDS A HUMAN WITH A BROWSER
+
+These are the gaps. Nothing here was proven; don't assume it works.
+
+[ ] SET CHAT_APP_URL ON NETLIFY — CONFIRMED MISSING (re-verified 2026-10-04)
+    The site has only 3 env vars: SUPABASE_URL, SUPABASE_ANON_KEY,
+    SUPABASE_SERVICE_ROLE_KEY. CHAT_APP_URL is NOT set, despite a deploy titled
+    "deploy admin dashboard with CHAT_APP_URL wired to render" — so it was
+    likely set only in a local/shell context, never on the site, or was lost.
+    Anything in the dashboard that links to or proxies the chat app will point
+    nowhere until this is set. Fix:
+      cd walltap-admin
+      netlify env:set CHAT_APP_URL "https://walltap.onrender.com"
+      netlify deploy --prod --dir .     (or let it redeploy on next push)
+    Verify with:  netlify env:list   → expect 4 keys.
+    Note: the current deploy is otherwise healthy — state=ready with all 4
+    functions bundled (analytics-summary, list-all-messages, list-users,
+    send-reset).
+
+[ ] LOAD THE ADMIN DASHBOARD ONCE
+    Sign in as wacudigitalhub@gmail.com on walltap.onrender.com, open the admin
+    panel. I only ever confirmed the 401 LOCK on the Netlify functions — the
+    200 UNLOCK path has never been exercised. If the dashboard 403s or renders
+    empty, that's the bug. Do this AFTER setting CHAT_APP_URL above.
+
+[ ] SIGN UP THROUGH THE BROWSER UI
+    The API signup path is proven. Actual clicks/typing are not. Hard-refresh
+    (Ctrl+Shift+R) first — a cached app.js is still the broken one.
+
+[ ] 2-BROWSER CALL TEST (never done, carried over from last session)
+    Start two browsers, call each other, watch logs. Start server with:
+      $env:PORT=3999; node server.js
+    Known limit: STUN-only, no TURN, so calls fail on symmetric NAT / corporate
+    / most mobile networks. There is also no connect-phase timeout, so a failed
+    call can hang on "Connecting…" with the camera still on.
+
+[ ] RATE LIMITER ON THE DEPLOY
+    The 40-post burst test is SKIPPED against a remote host (it needs two source
+    IPs for a clean window). It only ever passed locally. Untested in prod.
+
+--------------------------------------------------------------------------------
+## 4. ADMIN ACCOUNTS
+
+Current state:
+  wacudigitalhub@gmail.com   username "admin1"   is_admin=TRUE   ← the admin
+  admin@walltap.local        username "admin"    is_admin=false  ← demoted,
+                                                                   still exists
+  (calltest / HSX_vrC9...)   username "calltest" is_admin=false  ← test account
+
+Password for wacudigitalhub@gmail.com is whatever you typed when you ran
+provision-admin. It is NOT recorded anywhere and is NOT recoverable.
+
+[ ] Consider reclaiming the username "admin" for the real admin (currently
+    "admin1"). Cosmetic only — authorization reads is_admin, never the username.
+    Blocked until "admin" is freed by deleting the old synthetic account.
+[ ] Delete admin@walltap.local if you don't want it lying around. Demoted, not
+    deleted, so it's recoverable.
+[ ] Use the admin panel's "Reset link" button once — this account has a REAL
+    inbox so recovery should work end-to-end for the first time. The synthetic
+    account could never test this path (no MX record for walltap.local).
+
+--------------------------------------------------------------------------------
+## 5. WHAT WAS FIXED TODAY (all committed + live)
+
+The big one: the app looked deployed but every API call 503'd.
+
+  * DATABASE_URL used Supabase's DIRECT host (db.<ref>.supabase.co), which is
+    IPv6-ONLY (AAAA record, no A record). Render free tier has no IPv6 egress →
+    ENETUNREACH → initSchema() failed → ready=false → every route 503'd while
+    / and /config.js still returned 200, so it LOOKED deployed.
+    Fix: use the IPv4 pooler. → commit 27120be
+  * sslmode=require breaks node-postgres against Supabase (self-signed cert).
+    Only sslmode=no-verify works. → .env
+      Verified by direct test against db.hbcsujvcizcnpgxkcxuu.supabase.co:5432
+      using the repo's own `pg`:
+        sslmode=require  -> FAIL: self-signed certificate in certificate chain
+        sslmode=prefer   -> FAIL: same
+        sslmode=verify-ca-> FAIL: same
+        sslmode=no-verify-> OK
+      Do not "correct" this back to `require` — it is what the pg driver treats
+      as an alias for verify-full. server.js:256 only passes its own
+      `ssl:{rejectUnauthorized:false}` when the URL has NO sslmode= at all, so
+      whatever you put here is what pg uses. no-verify and omitting sslmode are
+      equivalent; no-verify is the explicit, self-documenting choice.
+  * public/app.js declared top-level `const supabase`; the Supabase CDN bundle
+    declares `var supabase` globally. Two classic <script> tags → SyntaxError at
+    PARSE time → entire file dead, zero listeners, login button inert.
+    Fix: wrapped app.js in an IIFE (2 lines, no rename).
+    → commit 37b69d8
+  * provision-admin left a half-created confirmed account when its grant failed,
+    dead-ending the retry. Now reuses the trigger's username + rolls back.
+    → commit acbd7a5
+  * server.js now binds the port BEFORE DB init, so slow init can't fail a
+    deploy health check. → commit aed5e86
+  * preflight.js now FAILS on an IPv6-only DATABASE_URL host, so the 503-only
+    deployment can't silently come back.
+
+Commits (main repo, master): 37b69d8 · 0a91414 · acbd7a5 · a06801e · 27120be ·
+26b3a47 · aed5e86. Admin repo still at 6af955e.
+
+--------------------------------------------------------------------------------
+## 6. KNOWN LIMITS / DEAD ENDS (don't re-investigate these)
+
+  * Two e2e tests asserted the WRONG status and were failing for that reason,
+    not because of an app bug: refresh-files "unauthenticated" actually SENT a
+    valid token; and a soft-deleted post 404s for everyone by design (the route
+    selects deleted_at IS NULL), it isn't 403. Both corrected. → 0a91414
+  * DEAD CODE server.js ~line 684: `if (row.deleted_at) return 404` is
+    unreachable — the query above it already filters deleted_at IS NULL.
+    Harmless, but misleading. Cosmetic.
+  * PowerShell shows mojibake ("�?") for em-dashes in source files. This is a
+    CONSOLE RENDERING artifact only — the files on disk are valid UTF-8. Don't
+    "fix" it. (The Read tool shows them correctly.)
+  * backfill-profiles reads all profile ids in one unpaginated query; past
+    ~1,000 profiles an existing admin can fall outside the fetched set and get
+    overwritten with is_admin=false. Fix before running on a large project.
+  * Uploads rejected with HTTP 500 instead of 400 for disallowed types, so the
+    client shows a generic error.
+  * logEvent wraps its insert in try/catch but supabase-js returns { error }
+    instead of throwing → analytics failures are silent.
+  * No TURN relay (needs Cloudflare Calls / Twilio creds). This is the main
+    blocker for reliable calls on real networks.
+  * Free tiers: Supabase pauses ~7 days idle; Render spins down ~15 min idle.
+    First request after idle can take ~30s.
+
+--------------------------------------------------------------------------------
+## 7. HOW TO RE-RUN THE TESTS
+
+  # preflight (env/hygiene checks — run before every commit)
+  node scripts\preflight.js
+
+  # API e2e against the DEPLOYED server (creates + cleans up its own users)
+  $env:E2E_BASE="https://walltap.onrender.com"; node scripts\e2e.js
+  Remove-Item env:\E2E_BASE
+  # NOTE: skips the rate-limit burst remotely by design. Run locally for that:
+  $env:PORT=3999; node server.js;  node scripts\e2e.js
+
+  # create another admin
+  npm run provision-admin -- --promote    # --promote required for existing accts
+
+--------------------------------------------------------------------------------
+## 8. CREDENTIALS LEAKED IN THIS SESSION — ALL NEED ROTATION
+
+  Render API key     rnd_****************  (REDACTED from this file on purpose)
+  Supabase PAT       sbp_****************  (REDACTED from this file on purpose)
+  Also in chat: admin password, and DB password in .env (local file only).
+
+  The literal values were removed from plan.txt because this repo is PUBLIC —
+  they were briefly committed here, so treat them as compromised regardless.
+  Both still exist in this session's chat transcript. Revoke and reissue; do
+  not rely on this file for the values.
+
+  REISSUING (rotate in this order, or you break production):
+    1. Render  → dashboard.render.com → Account Settings → API Keys → Create.
+       Copy the new key. Update it wherever you keep it locally.
+    2. Supabase → supabase.com/dashboard/account/tokens → Generate.
+    3. Update consumers BEFORE revoking the old token:
+         Render service  → env vars (only if a Supabase value changed)
+         Netlify site    → the 3 SUPABASE_* env vars (the admin functions
+                           authenticate to Supabase with the service-role key,
+                           so a stale PAT is not what breaks it — but re-check
+                           the SUPABASE_* values match the new project state)
+       Then revoke the old Supabase token.
+    3b. The leaked Render key is only an API key — rotating it does NOT touch
+        production env vars, so it is safe to revoke immediately. Do that first
+        if you want the risk closed fastest.
+
+  Tools: no `gh` CLI installed. netlify-cli 27.4.0 present. No Render CLI (API
+  used directly). No Playwright browsers installed — only a .links dir — which
+  is why the browser UI could not be tested automatically.
+
+  ENVIRONMENT GOTCHAS (these cost real time today — don't relearn them):
+  * The shell is Windows PowerShell 5.1. No `&&`, no `head`/`tail`/`grep`/`which`.
+    Use `; if ($?) { }`, `Select-Object -First/-Last`, `Select-String`, and
+    `where.exe`. Chain work with the `workdir` parameter, not `cd`.
+  * `Invoke-RestMethod -Body $string` mangles embedded newlines. Send UTF-8
+    bytes instead: `-Body ([Text.Encoding]::UTF8.GetBytes($json))` with
+    `-ContentType "application/json; charset=utf-8"`.
+  * Render's REST API gives deploy STATUS but never build/runtime LOGS. When a
+    deploy fails there is no supported way to read why over the API — reproduce
+    locally instead: fresh `git clone`, `npm ci`, then run with the env vars
+    injected and NO .env file. That reproduces Render closely.
+  * `npm start` cannot be launched via Start-Process directly (npm is a .ps1/
+    shim, not a Win32 exe). Use Start-Process on `cmd.exe /c npm start`.
+  * `netlify api <cmd> --data '{...}'` needs the inner quotes backslash-escaped
+    in PowerShell, or it reports "Invalid JSON".
+
+  Stray node processes from testing were killed; ports 3000/3999/10000 are free.
+================================================================================
