@@ -10,6 +10,28 @@ const { createClient } = require("@supabase/supabase-js");
 
 const PER_PAGE = 200;
 
+// PostgREST caps a response at 1000 rows and silently truncates beyond it, so a
+// single .select("id") used to make `present` incomplete on a busy project: any
+// admin whose id fell outside the window looked "missing" and got overwritten
+// with is_admin=false. Read the ids in explicit pages.
+async function listProfileIds(supabase) {
+  const ids = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const to = from + pageSize - 1;
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id")
+      .order("id")
+      .range(from, to);
+    if (error) throw error;
+    if (!data || !data.length) break;
+    ids.push(...data.map(r => r.id));
+    if (data.length < pageSize) break;
+  }
+  return ids;
+}
+
 async function main() {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env");
@@ -22,9 +44,7 @@ async function main() {
     { auth: { persistSession: false, autoRefreshToken: false } }
   );
 
-  const { data: existing, error: existingErr } = await supabase.from("profiles").select("id");
-  if (existingErr) throw existingErr;
-  const present = new Set((existing || []).map(r => r.id));
+  const present = new Set(await listProfileIds(supabase));
 
   const users = [];
   let page = 1;
@@ -51,9 +71,12 @@ async function main() {
       "user"
     ).slice(0, 40) || "user";
 
+    // ignoreDuplicates, not a plain upsert: the row is only ever created when it
+    // is genuinely absent, so a stale/partial `present` set can never overwrite an
+    // existing profile's is_admin.
     const { error } = await supabase.from("profiles").upsert(
       { id: u.id, username, is_admin: false },
-      { onConflict: "id" }
+      { onConflict: "id", ignoreDuplicates: true }
     );
     if (error) {
       console.warn(`  skipped ${u.email || u.id}: ${error.message}`);

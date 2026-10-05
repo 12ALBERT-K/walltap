@@ -168,14 +168,18 @@ async function apiFetch(url, options = {}) {
   return fetch(url, opts);
 }
 
-// Fire-and-forget analytics row (used by the admin dashboard).
+// Fire-and-forget analytics row (used by the admin dashboard). Never blocks the
+// caller, but never fails silently either: supabase-js resolves with { error }
+// rather than rejecting, so the result has to be inspected explicitly.
 function logEvent(event_type, metadata = {}) {
   if (!supabase || !currentUserId) return;
   supabase
     .from("events")
     .insert({ event_type, user_id: currentUserId, metadata })
-    .then(() => {})
-    .catch(() => {});
+    .then(({ error }) => {
+      if (error) console.warn(`logEvent(${event_type}) failed:`, error.message);
+    })
+    .catch((err) => console.warn(`logEvent(${event_type}) threw:`, err.message));
 }
 
 

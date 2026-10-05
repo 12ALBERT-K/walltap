@@ -621,11 +621,6 @@ app.delete("/api/posts/:id", requireAuth, async (req, res) => {
   if (row.author_id && row.author_id !== req.user.id) {
     return res.status(403).json({ error: "You can only erase your own posts." });
   }
-  // Already gone. Answer 404 rather than re-applying, so a retried request
-  // cannot overwrite the original deleted_at (the audit trail) or fire a
-  // second message_deleted event / post-deleted broadcast.
-  if (row.deleted_at) return res.status(404).json({ error: "Post not found." });
-
   const { error: softErr } = await supabase
     .from("posts")
     .update({ deleted_at: new Date().toISOString(), hidden_from_user: true })
