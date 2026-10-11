@@ -4,7 +4,7 @@
   "description": "A real-time public Walltap built with Node.js, Express, and Supabase.",
   "main": "server.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=20 <26"
   },
   "scripts": {
     "start": "node server.js",
