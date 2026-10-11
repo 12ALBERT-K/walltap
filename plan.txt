@@ -1,27 +1,65 @@
 ================================================================================
 WALLTAP — SESSION HANDOVER
-Last updated: 2026-10-04 (end of session)
+Last updated: 2026-10-11 (end of session)
 Live: https://walltap.onrender.com  ·  https://walltap-admin.netlify.app
 
-START HERE: LIVE STATE (confirm nothing moved since 37b69d8 went live) →
-WORKLIST below → then the numbered sections §1-§8 for detail behind each item.
+START HERE: LIVE STATE → latest verified state is in the "DEPLOY SAGA"
+section below (the service URL is up but UNCONFIGURED: 0 env vars, old code).
+Fix that before trusting anything else → then the WORKLIST.
 ================================================================================
 
 ## TL;DR — WHERE THINGS STAND
 
-Both sites are deployed and the backend is verified working end-to-end (41/41 API
-tests pass against the live deployment). The frontend had a fatal script bug
-last hour which is now fixed and live.
+Code is fully FIXED and verified locally + against live Supabase; the site is up
+but the NEW Render service is UNCONFIGURED right now (0 env vars, old commit), so
+the live API returns 503 "Server is not configured yet." Steps to finish are in
+the DEPLOY SAGA section below — they are mostly dashboard clicks, no code.
 
-Two things still block "done":
-  1. Rotate the Render + Supabase API tokens (both are leaked in chat history).
-  2. Render's auto-deploy is NOT firing — pushes sit undeployed until triggered.
-  3. CHAT_APP_URL is missing on the Netlify admin site (section 3).
+Still blocking "done" (unchanged):
+  1. Set the 8 env vars on the walltap Render service + redeploy latest commit.
+  2. Rotate the Render + Supabase API tokens (both are leaked in chat history).
+  3. Render's auto-deploy is NOT firing — pushes sit undeployed until triggered.
+  4. CHAT_APP_URL is missing on the Netlify admin site (section 3).
+
+-------------------------------------------------------------------------------
+## DEPLOY SAGA (2026-10-11, evening) — NEW Render service, CURRENT LIVE STATE
+
+The old Render "whatapp" service was deleted and a new service was created on
+https://walltap.onrender.com. Verified live at the end of the session:
+
+  * It IS our Express app now (the better-sqlite3 crash is gone) — BUT:
+      GET /config.js       -> 200 with SUPABASE_URL=""            (env vars EMPTY)
+      GET /api/posts       -> 503 {"error":"Server is not configured yet."}
+      app.js               -> IIFE present, NO resolveAccountEmail -> code is
+                             OLDER than d5f2520 (the fix commit is not live)
+  * Deploy log said "injected env (0) from .env" + "Missing environment
+    variables: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY".
+  * ROOT CAUSE: render.yaml declares the 4 Supabase vars with sync:false, which
+    creates EMPTY placeholders. Values must be typed into the dashboard by a
+    human — a deploy never fills them in.
+  * Earlier today a deploy crashed with "better-sqlite3 ... invalid ELF header"
+    (server.js:15) — that was the OLD sqlite app being deployed (wrong repo link
+    or an uploaded folder containing Windows node_modules). Fixed by switching
+    the service to build from 12ALBERT-K/walltap@master with `npm ci`.
+
+NEXT STEPS (all dashboard, no code):
+  [ ] Render service -> Environment -> paste real values: SUPABASE_URL,
+      SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DATABASE_URL
+      (pooler + sslmode=no-verify), MAX_FILE_SIZE_MB=15, MAX_FILES=5,
+      STORAGE_BUCKET=uploads, SIGNED_URL_TTL_SECONDS=604800, NODE_VERSION=20.
+      Save triggers an auto-redeploy.
+  [ ] Then Manual Deploy -> Deploy latest commit on master (must show 8fd9c4c).
+  [ ] Success check: /config.js returns the real URL; /api/posts -> 401,
+      not 503. Then re-run the live login verification (see §3 / Chrome pass).
+
+  Env note: dotenv logging "(0) from .env" only counts a .env FILE, so ignore
+  that number; the "Missing environment variables" line is the real signal.
 
 -------------------------------------------------------------------------------
 ## LATEST SESSION (2026-10-11) — "users can't get in / process dies"
 
-Investigated live. Root causes found and FIXED in code (commit pending deploy):
+Investigated live. Root causes found and FIXED + VERIFIED in code
+(commits d5f2520 and 8fd9c4c — still need the deploy above to go live):
 
   1. LEGACY LOGIN TRAP — accounts created before the username system keep REAL
      emails (admin1 = wacudigitalhub@gmail.com, calltest = HSX_...). The old
@@ -44,33 +82,34 @@ Investigated live. Root causes found and FIXED in code (commit pending deploy):
      min keeps the instance awake.
 
   Verified this session: all 44 local e2e tests pass on the patched server;
-  preflight passes; deployed app.js/server.js match HEAD; Chrome UI tests pass.
+  preflight passes; committed the fix; full Chrome UI verification passed
+  15/15 (legacy username sign-in, new signup, same-device re-login, fresh
+  "another device" profile, wrong-password rejection); pinned Node engine to
+  ">=20 <26" (commit 8fd9c4c) after the new deploy tried Node 26.
 
-  STILL NEEDS A HUMAN: deploy this to Render (auto-deploy never fires; see §2),
-  and rotate the leaked tokens (§1).
+  STILL NEEDS A HUMAN: the env vars + latest-commit deploy in the DEPLOY SAGA
+  section above, and rotate the leaked tokens (§1).
 
 -------------------------------------------------------------------------------
 
 --------------------------------------------------------------------------------
-## LIVE STATE — RE-VERIFIED 2026-10-04 (do this first, it may have moved)
+## LIVE STATE — as of end of 2026-10-11 (this supersedes the 10-04 entry below)
 
-  Render  deploy dep-db1bk11srm7s73auprm0  status LIVE  commit 37b69d8
-          https://walltap.onrender.com
-            GET /config.js  -> 200, and now returns the REAL SUPABASE_URL +
-              anon key (it returned empty strings before the env vars landed).
-              This is the single best one-line "is it actually configured" check.
-            GET /           -> 200 (42 KB of HTML)
-            GET /api/posts  -> 401 {"error":"Authentication required."}
-              A 401 here is GOOD: it proves ready=true, i.e. initSchema() and
-              ensureBucket() both succeeded against Postgres + Storage. If the
-              app were half-configured you would get 503 "Server is not
-              configured yet." instead. 404/401 != broken.
-            Free tier spins down after ~15 min idle, so the first request after
-            a pause can take ~30s. A slow first hit is not a failure.
+  Render  https://walltap.onrender.com  -> our Express app, but UNCONFIGURED:
+            /config.js -> 200 with SUPABASE_URL="" (env vars NOT set yet)
+            /api/posts -> 503 "Server is not configured yet." (this is BROKEN,
+                          the healthy value is 401)
+            app.js     -> old commit (no resolveAccountEmail; < d5f2520)
+            Fix steps: see DEPLOY SAGA above. Do NOT declare this live/working
+            until /config.js returns the real URL and /api/posts gives 401.
+
+  The entry below (10-04) documents the PREVIOUS deployment and is kept only for
+  history: the old service/commit 37b69d8 was superseded by the new service.
 
   Netlify deploy 6ac29c054b47c8ede8dfc923  state ready  published 18:34
           https://walltap-admin.netlify.app  -> GET / returns 200
           4 functions bundled, including send-reset.
+          CHAT_APP_URL still MISSING on this site (needs netlify env:set).
 
   Supabase  project ref hbcsujvcizcnpgxkcxuu (eu-west-1, ACTIVE_HEALTHY)
             mailer_autoconfirm = TRUE   (Confirm email is OFF)
@@ -84,12 +123,17 @@ Investigated live. Root causes found and FIXED in code (commit pending deploy):
             "expected string, received array". The field is NOT called
             redirect_uri — patching that name is a silent no-op.
 
-  Git HEAD main repo  37b69d8   ·   admin repo  6af955e
+  Git HEAD main repo  8fd9c4c   ·   admin repo  6af955e
 
 --------------------------------------------------------------------------------
 ## WORKLIST — PICK THESE UP NEXT TIME
 
 Ordered by urgency. Detail for each is in the numbered section noted.
+
+DO THIS NOW — the site is up but not live-functional (see DEPLOY SAGA):
+  [ ] 0. Set the env vars on the walltap Render service + redeploy latest
+          commit (must show 8fd9c4c). Until then /api/posts -> 503 and
+          /config.js -> SUPABASE_URL="" and NONE of the login fixes are live.
 
 BLOCKING / SECURITY
   [ ] 1. Rotate Render API key .................. §1  (you do it, then I redeploy)
@@ -100,17 +144,19 @@ UNVERIFIED — highest product risk
   [ ] 4. Verify admin dashboard 200 path ........ §3  (only ever saw the 401 LOCK;
                                                   needs the admin password, which
                                                   is NOT recoverable from here)
-  [ ] 5. Sign up through the real browser UI .... §3  (API proven, clicks not)
+  [x] 5. Sign up through the real browser UI .... done 2026-10-11 in headless
+                                                  Chrome (15/15 incl. legacy
+                                                  username login + 2nd device) —
+                                                  re-verify once the deploy is live
   [ ] 6. 2-browser WebRTC call test .............. §3  (never done at all)
 
-CODE FIXES — fully autonomous, I can do these with no input
-  [ ] 7.  Uploads return 400 not 500 ............ §6  (bad types show generic error)
-  [ ] 8.  logEvent silent failures .............. §6  (try/catch never fires,
-                                                  supabase-js returns {error})
-  [ ] 9.  backfill-profiles pagination .......... §6  (DANGEROUS past ~1000
-                                                  profiles: admin can be reset
-                                                  to is_admin=false)
-  [ ] 10. Remove dead deleted_at check ......... §6  (server.js ~684, unreachable)
+CODE FIXES — all done in code, commit pending the §0 deploy
+  [x] 7.  Uploads return 400 not 500 ............ §6  (err.statusCode=400 in fileFilter)
+  [x] 8.  logEvent silent failures .............. §6  (checks result.error explicitly)
+  [x] 9.  backfill-profiles pagination .......... §6  (paginated in commit 8f529e1)
+  [x] 10. Remove dead deleted_at check ......... §6  (dropped in commit 8f529e1)
+  [x]     Login: legacy username -> real email . §5  (POST /api/resolve-login, d5f2520)
+  [x]     Process crash vector ................. §5  (asyncHandler + crash handlers, d5f2520)
 
 OPTIONAL / BLOCKED ON CREDITS OR INSTALLS
   [ ] 11. Add TURN relay for calls .............. §6  (needs Cloudflare/Twilio creds)
