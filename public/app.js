@@ -168,6 +168,26 @@ async function apiFetch(url, options = {}) {
   return fetch(url, opts);
 }
 
+// Maps a username to the account's real login email. Accounts created before
+// the username system ("Phase 5") keep real emails, so a username sign-in that
+// never reaches them would otherwise fail forever even with the right password.
+// Called once, only as a fallback after a synthetic-address sign-in misses.
+// Returns null on any failure so login latency never depends on this endpoint.
+async function resolveAccountEmail(username) {
+  try {
+    const res = await apiFetch("/api/resolve-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    if (!res.ok) return null;
+    const data = await parseJsonSafe(res);
+    return (data && data.email) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Fire-and-forget analytics row (used by the admin dashboard). Never blocks the
 // caller, but never fails silently either: supabase-js resolves with { error }
 // rather than rejecting, so the result has to be inspected explicitly.
@@ -998,9 +1018,22 @@ async function handleAuth() {
 
   try {
     if (isLogin) {
-      const { data, error } = await supabase.auth.signInWithPassword({ email: login.email, password });
-      if (error) throw error;
-      applySession(data.session);
+      let result = await supabase.auth.signInWithPassword({ email: login.email, password });
+
+      // A username sign-in can miss for a reason that isn't the password:
+      // accounts created before the username system have real emails, so the
+      // synthetic <username>@walltap.local address doesn't exist. Resolve the
+      // stored email once and retry — typing your username must always work.
+      if (result.error && login.synthetic && /invalid login credentials/i.test(result.error.message)) {
+        const realEmail = await resolveAccountEmail(login.username);
+        if (realEmail && realEmail !== login.email) {
+          const retry = await supabase.auth.signInWithPassword({ email: realEmail, password });
+          if (!retry.error) result = retry;
+        }
+      }
+
+      if (result.error) throw result.error;
+      applySession(result.data.session);
       enterApp();
     } else {
       // display_name drives profiles.username via the auth.users trigger, so the

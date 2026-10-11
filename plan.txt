@@ -18,6 +18,39 @@ Two things still block "done":
   2. Render's auto-deploy is NOT firing — pushes sit undeployed until triggered.
   3. CHAT_APP_URL is missing on the Netlify admin site (section 3).
 
+-------------------------------------------------------------------------------
+## LATEST SESSION (2026-10-11) — "users can't get in / process dies"
+
+Investigated live. Root causes found and FIXED in code (commit pending deploy):
+
+  1. LEGACY LOGIN TRAP — accounts created before the username system keep REAL
+     emails (admin1 = wacudigitalhub@gmail.com, calltest = HSX_...). The old
+     client mapped any typed username to <name>@walltap.local, so signing in by
+     username alone failed FOREVER with "Wrong username or password" even with
+     the right password. NEW: POST /api/resolve-login maps profiles.username →
+     stored email (via admin_profiles view); the browser retries once with the
+     real email before showing the error. Verified in real Chrome: legacy
+     account signs in by username only; fresh signup + cross-device sign-in
+     still work; wrong passwords still show the same generic message.
+  2. PROCESS CRASH VECTOR — server had async handlers (requireAuth, DELETE
+     /api/posts/:id, and the GET/POST/refresh routes) that Express 4 does not
+     wrap: a rejected promise became an unhandledRejection and Node killed the
+     whole process (a flaky Supabase response while spinning up = dead site).
+     NEW: asyncHandler() wrapper on every async route + process-level
+     unhandledRejection/uncaughtException handlers that log and stay up.
+  3. COLD START (not a code bug) — Render free tier still 503s for ~30-60s
+     after ~15 min idle. Seen live again today. Cheap mitigation: a cron
+     (cron-job.org) hitting https://walltap.onrender.com/config.js every ~10
+     min keeps the instance awake.
+
+  Verified this session: all 44 local e2e tests pass on the patched server;
+  preflight passes; deployed app.js/server.js match HEAD; Chrome UI tests pass.
+
+  STILL NEEDS A HUMAN: deploy this to Render (auto-deploy never fires; see §2),
+  and rotate the leaked tokens (§1).
+
+-------------------------------------------------------------------------------
+
 --------------------------------------------------------------------------------
 ## LIVE STATE — RE-VERIFIED 2026-10-04 (do this first, it may have moved)
 

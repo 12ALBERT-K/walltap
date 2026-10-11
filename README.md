@@ -46,6 +46,16 @@ Consequences worth knowing:
   on collision (`alice` → `alice1`), so a taken name degrades to a different
   name instead of a failed registration. The client cannot see the assigned
   name until after sign-in, so tell people to pick something distinctive.
+- **Typing your username always works — even for pre-username accounts.**
+  Accounts created before this change keep their real email, so a username-only
+  sign-in misses them (`admin1` lives under `wacudigitalhub@gmail.com`, not
+  `admin1@walltap.local`). Sign-in now falls back to
+  `POST /api/resolve-login` (maps `profiles.username` → the account's stored
+  email, read via the service-role-only `admin_profiles` view) and retries once
+  with the real email before giving up. A wrong password still shows the same
+  "Wrong username or password." message, so it does not leak whether a name
+  exists — but a *correct* password now logs in by username alone, on any
+  device.
 - **Case-insensitive.** Usernames are lowercased before use; `Alice` and
   `alice` are the same account.
 - Allowed characters: letters, numbers, `.`, `-`, `_`, 3–40 characters.
@@ -111,6 +121,11 @@ is served to every browser at `/config.js`):
   owner and bypass RLS, so without that revoke the whole user list would be
   readable with the public anon key.
 - `events` may only be inserted for your own `user_id`.
+
+`POST /api/resolve-login` is unauthenticated by design — it is the one lookup
+the login screen needs before a session exists, it answers only one
+username → email pair per call, and it is rate-limited. It reads the
+service-role-only `admin_profiles` view, never the anon client.
 
 If you change any policy in `SCHEMA_SQL`, re-verify these grants — Supabase
 grants all privileges on new objects in `public` to `anon` by default.

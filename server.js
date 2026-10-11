@@ -9,6 +9,26 @@ const { Pool }   = require("pg");
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// A crash on any single request must not take the whole instance down —
+// especially on a free tier, where every restart is a slow cold start.
+// Supabase clients resolve most failures as {error}, but a network-level throw
+// or an unexpected exception would otherwise reach Node's default handler and
+// exit the process. Log it and stay up: the app keeps serving healthy requests
+// and the fault shows up in the logs.
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection:", reason instanceof Error ? reason.stack || reason.message : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("uncaughtException:", err.stack || err.message);
+});
+
+// Express 4 does NOT forward a rejected promise from an async handler to the
+// error middleware: the promise is dropped, Node sees an unhandledRejection and
+// kills the process. Wrap every async handler so a failure becomes a proper 500
+// routed to the error handler below instead of a dead instance.
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
 // ── Configuration (overridable via environment) ─────────────
 const SUPABASE_URL              = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY         = process.env.SUPABASE_ANON_KEY || "";
@@ -323,6 +343,10 @@ app.get("/config.js", (req, res) => {
   );
 });
 
+// ── POST /api/resolve-login ──────────────────────────────────
+// (Route is registered below, after the rate limiters it needs — see the
+//  "Rate limiting" section for the loginLimiter definition.)
+
 // ── Auth helpers ──────────────────────────────────────────────
 function displayName(user) {
   const md = user.user_metadata || {};
@@ -337,7 +361,7 @@ function bearerToken(req) {
   return "";
 }
 
-async function requireAuth(req, res, next) {
+const requireAuth = asyncHandler(async (req, res, next) => {
   if (!ready) return res.status(503).json({ error: "Server is not configured yet." });
   const token = bearerToken(req);
   if (!token) return res.status(401).json({ error: "Authentication required." });
@@ -348,7 +372,7 @@ async function requireAuth(req, res, next) {
   req.user   = data.user;
   req.author = displayName(data.user);
   next();
-}
+});
 
 // ── Rate limiting (in-memory, fixed window) ─────────────────
 function rateLimit({ windowMs, max }) {
@@ -376,11 +400,41 @@ function rateLimit({ windowMs, max }) {
   };
 }
 const postLimiter  = rateLimit({ windowMs: 60 * 1000, max: 30 });
+const loginLimiter = rateLimit({ windowMs: 60 * 1000, max: 30 });
 // Reads are cheap for the caller but not for us: every attachment on a page
 // costs a Storage signing round-trip, so an unbounded GET is the easiest way to
 // take the whole instance down. Generous enough for a client polling the feed.
 const getLimiter   = rateLimit({ windowMs: 60 * 1000, max: 120 });
 const refreshLimiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
+
+// ── POST /api/resolve-login ──────────────────────────────────
+// Maps a username to the account's real login email.
+//
+// Accounts created since the username system (Phase 5) sign in as
+// <username>@walltap.local, so "type your username" always matches. Accounts
+// created BEFORE it (the admin, calltest, any real-email account) keep their
+// original email, so typing the username alone used to fail forever with
+// "Wrong username or password" — even with the correct password, because the
+// app had no way to know the account lived under a real email.
+//
+// The browser falls back to this once when a username sign-in misses. It
+// returns the profile's real email, or null when no profile matches, so the
+// follow-up sign-in attempt keeps exactly the same shape. Email is read via
+// admin_profiles, which is service_role-only (see SCHEMA_SQL).
+app.post("/api/resolve-login", loginLimiter, asyncHandler(async (req, res) => {
+  const username = String(((req.body || {}).username) || "")
+    .trim().toLowerCase().slice(0, 40);
+  if (!username) return res.json({ email: null });
+
+  const { data, error } = await supabase
+    .from("admin_profiles")
+    .select("email")
+    .eq("username", username)
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: "Failed to look up that username." });
+
+  res.json({ email: data ? data.email : null });
+}));
 
 // Feed paging. The default page is deliberately small: it is also the number of
 // Storage signing calls a single page load can cost.
@@ -450,7 +504,7 @@ async function fetchFilesByPost(postIds) {
 // pages. The newest page comes back by default — ordering ascending and then
 // truncating would show a new visitor the 50 *oldest* posts on the board.
 // Response stays a plain array, oldest-first, to match the bottom-anchored feed.
-app.get("/api/posts", getLimiter, requireAuth, async (req, res) => {
+app.get("/api/posts", getLimiter, requireAuth, asyncHandler(async (req, res) => {
   try {
     const rawLimit = Number.parseInt(req.query.limit, 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
@@ -478,14 +532,14 @@ app.get("/api/posts", getLimiter, requireAuth, async (req, res) => {
     console.error("GET /api/posts failed:", err.stack || err.message);
     res.status(500).json({ error: "Failed to load posts." });
   }
-});
+}));
 
 // ── POST /api/posts/refresh-files ─────────────────────────────
 // Signed URLs expire (SIGNED_URL_TTL_SECONDS, default 7 days) and the browser
 // only learns a URL is dead when the request 403s. The feed calls this to mint
 // fresh URLs for posts whose attachments stopped loading, so old attachments
 // recover instead of breaking permanently.
-app.post("/api/posts/refresh-files", refreshLimiter, requireAuth, async (req, res) => {
+app.post("/api/posts/refresh-files", refreshLimiter, requireAuth, asyncHandler(async (req, res) => {
   try {
     const ids = Array.isArray(req.body.ids)
       ? [...new Set(req.body.ids.filter(v => typeof v === "string"))].slice(0, MAX_REFRESH_IDS)
@@ -516,10 +570,10 @@ app.post("/api/posts/refresh-files", refreshLimiter, requireAuth, async (req, re
     console.error("POST /api/posts/refresh-files failed:", err.message);
     res.status(500).json({ error: "Failed to refresh attachments." });
   }
-});
+}));
 
 // ── POST /api/posts ───────────────────────────────────────────
-app.post("/api/posts", postLimiter, requireAuth, upload.array("files", MAX_FILES), async (req, res) => {
+app.post("/api/posts", postLimiter, requireAuth, upload.array("files", MAX_FILES), asyncHandler(async (req, res) => {
   const text  = (req.body.text || "").trim();
   const files = req.files || [];
 
@@ -601,10 +655,10 @@ app.post("/api/posts", postLimiter, requireAuth, upload.array("files", MAX_FILES
     }
     res.status(500).json({ error: "Failed to save post." });
   }
-});
+}));
 
 // ── DELETE /api/posts/:id ─────────────────────────────────────
-app.delete("/api/posts/:id", requireAuth, async (req, res) => {
+app.delete("/api/posts/:id", requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
 
   // deleted_at IS NULL: a post the caller already erased is gone as far as they
@@ -630,7 +684,7 @@ app.delete("/api/posts/:id", requireAuth, async (req, res) => {
   logEvent("message_deleted", req.user.id, { id, soft: true });
   broadcast("post-deleted", { id });
   res.status(204).end();
-});
+}));
 
 // ── Realtime broadcast (replaces SSE) ─────────────────────────
 // The server (service-role client) broadcasts on a shared "board" channel;
