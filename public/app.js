@@ -348,7 +348,7 @@ function createPostElement(post) {
 
   const ticks = document.createElement("span");
   ticks.classList.add("post-ticks");
-  ticks.textContent = "✓✓";
+  if (isOwn) ticks.textContent = "✓";
   meta.appendChild(ticks);
 
   if (isOwn) {
