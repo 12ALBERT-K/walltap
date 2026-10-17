@@ -3,14 +3,33 @@ WALLTAP — SESSION HANDOVER
 Last updated: 2026-10-17
 Live: https://walltap.onrender.com  ·  https://walltap-admin.netlify.app
 
-START HERE: LIVE STATE → the service is still UNCONFIGURED (0 env vars, old
-code). TWO things block a working deploy, both verified on 2026-10-17:
-  (a) the 4 env vars are missing on the Render service (dashboard-only), and
-  (b) the fix commits had NEVER been pushed to GitHub (Render builds from
-      GitHub, so "deploy latest commit" would have shipped the broken login).
-(b) is now FIXED — origin/master = 3e5d75d. See the 2026-10-17 block below.
+START HERE: THE SITE IS DEPLOYED AND VERIFIED (2026-10-17). The Render env vars
+are set, /api/posts returns 401 (not 503), /config.js returns the real URL, and
+the login fixes are proven live in a real browser. See "LIVE VERIFICATION
+2026-10-17" below for the exact evidence and how to re-run it.
+Remaining work is NOT code: token rotation (§1), the Render GitHub App (§2),
+and the admin dashboard 200 path (§3, needs the admin password).
 ================================================================================
+## LIVE VERIFICATION — 2026-10-17 (all against https://walltap.onrender.com)
 
+  * /config.js            -> 200, real SUPABASE_URL + anon key (env vars set)
+  * /api/posts (no auth)  -> 401  ← the healthy value; 503 is gone
+  * /                     -> 200
+  * app.js                -> contains resolveAccountEmail (fix is live)
+  * API e2e (scripts\e2e.js, E2E_BASE=https://walltap.onrender.com)
+                          -> 41 passed, 0 failed (creates + cleans its own users)
+  * POST /api/resolve-login {"username":"admin1"} -> {"email":"wacudigitalhub@gmail.com"}
+    and a bogus username -> {"email":null}. The legacy-username fix is live.
+  * Legacy login in a REAL browser (Playwright, prod) -> 4/4:
+    a temp account with a REAL email signed in using ONLY its username.
+    Script: <opencode-temp>\pw\legacy-login-test.js
+  * 2-browser WebRTC call against PROD -> 7/7 (see BROWSER TEST TOOLING).
+    presence, call, ICE connected with real media 640x480, hangup, self-cleanup.
+
+  Not yet proven live: admin dashboard 200 path (needs the admin password);
+  the 40-post rate-limit burst (skipped remotely by design).
+
+================================================================================
 ## SESSION 2026-10-17 — PUSH-FIRST + GITHUB APP (read this before deploying)
 
 Two lessons that cost a whole cycle. Both verified against the live GitHub API.
@@ -59,56 +78,61 @@ Other verified 2026-10-17 updates:
 --------------------------------------------------------------------------------
 ## TL;DR — WHERE THINGS STAND
 
-Code is fully FIXED and verified locally + against live Supabase; the site is up
-but the NEW Render service is UNCONFIGURED right now (0 env vars, old commit), so
-the live API returns 503 "Server is not configured yet." Steps to finish are in
-the DEPLOY SAGA section below — they are mostly dashboard clicks, no code.
+Code is FIXED, DEPLOYED and VERIFIED LIVE (2026-10-17). /api/posts returns 401,
+/config.js returns the real URL, API e2e is 41/41, and the legacy-username login
+is proven in a real browser. See "LIVE VERIFICATION — 2026-10-17" at the top.
 
-Still blocking "done" (updated 2026-10-17):
-  1. Set the 8 env vars on the walltap Render service + redeploy latest commit
-     (dashboard-only; the code to deploy is now on GitHub at 3e5d75d).
-  2. Rotate the Render + Supabase API tokens (both are leaked in chat history).
-  3. Render's auto-deploy is NOT firing — the Render GitHub App is not
-     installed (re-confirmed 2026-10-17; see the 2026-10-17 block).
-  4. ~~CHAT_APP_URL is missing on the Netlify admin site~~ DONE — it is set
-     (verified 2026-10-17). Nothing to do.
+Still open — none of it is code:
+  1. Rotate the Render + Supabase API tokens (both leaked in chat history). §1
+  2. Render's auto-deploy still does NOT fire — the Render GitHub App is not
+     installed (re-confirmed 2026-10-17; see the 2026-10-17 block). §2
+  3. Admin dashboard 200 path still unproven (needs the admin password). §3
+  4. TURN relay for calls on real networks. §6 / item 11
+  DONE: env vars + deploy (§0), CHAT_APP_URL, browser UI signup + legacy login,
+  2-browser WebRTC call test, Playwright install.
 
--------------------------------------------------------------------------------
-## DEPLOY SAGA (2026-10-11, evening) — NEW Render service, CURRENT LIVE STATE
+--------------------------------------------------------------------------------
+## DEPLOY SAGA — RESOLVED 2026-10-17 (kept for history)
+
+The service was UNCONFIGURED for days (0 env vars, old commit → 503). It is now
+CONFIGURED and serving correctly: env vars set, /api/posts -> 401, and the fix
+commit is live (app.js has resolveAccountEmail). Kept below for the history and
+the root-cause notes.
 
 The old Render "whatapp" service was deleted and a new service was created on
-https://walltap.onrender.com. Verified live at the end of the session:
+https://walltap.onrender.com. Verified live at the end of the 2026-10-11 session:
 
-  * It IS our Express app now (the better-sqlite3 crash is gone) — BUT:
+  * It WAS our Express app (the better-sqlite3 crash was gone) — BUT:
       GET /config.js       -> 200 with SUPABASE_URL=""            (env vars EMPTY)
       GET /api/posts       -> 503 {"error":"Server is not configured yet."}
-      app.js               -> IIFE present, NO resolveAccountEmail -> code is
-                             OLDER than d5f2520 (the fix commit is not live)
+      app.js               -> IIFE present, NO resolveAccountEmail -> code OLDER
+                             than d5f2520 (the fix commit was not live)
   * Deploy log said "injected env (0) from .env" + "Missing environment
     variables: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY".
+    NOTE: dotenv's "(0) from .env" only counts a .env FILE; the "Missing
+    environment variables" line is the real signal.
   * ROOT CAUSE: render.yaml declares the 4 Supabase vars with sync:false, which
     creates EMPTY placeholders. Values must be typed into the dashboard by a
-    human — a deploy never fills them in.
-  * Earlier today a deploy crashed with "better-sqlite3 ... invalid ELF header"
+    human — a deploy never fills them in. Done 2026-10-17.
+  * An earlier deploy crashed with "better-sqlite3 ... invalid ELF header"
     (server.js:15) — that was the OLD sqlite app being deployed (wrong repo link
     or an uploaded folder containing Windows node_modules). Fixed by switching
     the service to build from 12ALBERT-K/walltap@master with `npm ci`.
 
-NEXT STEPS (all dashboard, no code):
-  [ ] FIRST: confirm GitHub has the code — origin/master must be 3e5d75d.
+STEPS AS ORIGINALLY WRITTEN (now done):
+  [x] FIRST: confirm GitHub has the code — origin/master must equal local HEAD.
       git fetch origin; git rev-list --left-right --count origin/master...HEAD
       The RIGHT number must be 0. (On 2026-10-17 this was 3 — the fix commits
-      were unpushed. Now fixed.)
-  [ ] Render service -> Environment -> paste real values: SUPABASE_URL,
+      were unpushed. Fixed.)
+  [x] Render service -> Environment -> paste real values: SUPABASE_URL,
       SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DATABASE_URL
       (pooler + sslmode=no-verify), MAX_FILE_SIZE_MB=15, MAX_FILES=5,
       STORAGE_BUCKET=uploads, SIGNED_URL_TTL_SECONDS=604800, NODE_VERSION=20.
       Save triggers an auto-redeploy.
-  [ ] Then Manual Deploy -> Deploy latest commit on master (must show 3e5d75d,
-      which must equal `git rev-parse HEAD`; older plans said 8fd9c4c, which
-      was never on GitHub).
-  [ ] Success check: /config.js returns the real URL; /api/posts -> 401,
-      not 503. Then re-run the live login verification (see §3 / Chrome pass).
+  [x] Then Manual Deploy -> Deploy latest commit on master (it must equal
+      `git rev-parse HEAD`; older plans said 8fd9c4c, which was never on GitHub).
+  [x] Success check: /config.js returns the real URL; /api/posts -> 401, not
+      503. Done 2026-10-17 — both confirmed, plus the live browser login pass.
 
   Env note: dotenv logging "(0) from .env" only counts a .env FILE, so ignore
   that number; the "Missing environment variables" line is the real signal.
@@ -194,9 +218,9 @@ DO THIS NOW — the site is up but not live-functional (see DEPLOY SAGA):
            shipped the broken login. Verify with:
              git fetch origin; git rev-list --left-right --count origin/master...HEAD
            (right number must be 0).
-  [ ] 0. Set the env vars on the walltap Render service + redeploy latest
-          commit (must show 3e5d75d). Until then /api/posts -> 503 and
-          /config.js -> SUPABASE_URL="" and NONE of the login fixes are live.
+  [x] 0. Set the env vars on the walltap Render service + redeploy latest
+          commit — DONE 2026-10-17. /api/posts -> 401, /config.js -> real URL,
+          fix commit live. See "LIVE VERIFICATION — 2026-10-17" at the top.
 
 BLOCKING / SECURITY
   [ ] 1. Rotate Render API key .................. §1  (you do it, then I redeploy)
@@ -211,11 +235,12 @@ UNVERIFIED — highest product risk
                                                  functions 2026-10-17; a Playwright
                                                  test now exists, needs the admin
                                                  password)
-  [x] 5. Sign up through the real browser UI .... done 2026-10-11 (15/15) AND
-                                                 re-proven 2026-10-17 by the
-                                                 Playwright call test (real UI
-                                                 signup ×2) — re-verify live once
-                                                 the deploy is up
+  [x] 5. Sign up through the real browser UI .... DONE 2026-10-17 (Playwright,
+                                                 against PROD): fresh UI signup
+                                                 ×2 works, and a legacy
+                                                 real-email account signs in by
+                                                 username only (4/4). See
+                                                 pw\legacy-login-test.js.
   [x] 6. 2-browser WebRTC call test ............. §3  DONE 2026-10-17:
                                                  Playwright test PASSES 7/7
                                                  (presence, call, ICE, real
@@ -248,10 +273,16 @@ Playwright + Chromium live OUTSIDE the repo (so `npm ci` on Render never sees
 them) at:  C:\Users\Albert\AppData\Local\Temp\opencode\pw
 
   call-test.js         2-browser WebRTC call test (fake media, self-cleaning).
+                       PASSES 7/7 on localhost AND against PROD
+                       (BASE=https://walltap.onrender.com).
                        Run against a local server:
                          $env:PORT=3999; node server.js   (in the repo)
                          $env:BASE="http://localhost:3999"; node call-test.js
                        Needs real test users in the DB; cleans them up.
+  legacy-login-test.js Creates a temp account with a REAL email (not
+                       @walltap.local) and signs in by USERNAME ONLY in a real
+                       browser. PASSES 4/4 against PROD. Proves the headline
+                       legacy-login fix end-to-end. Self-cleaning.
   admin-test.js        Admin dashboard 200-path test. Credentials via env:
                          $env:ADMIN_EMAIL="..."; $env:ADMIN_PASSWORD="..."; node admin-test.js
   debug-presence.js    Dumps presence/online-bar state for two users.
