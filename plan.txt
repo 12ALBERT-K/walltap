@@ -25,9 +25,42 @@ and the admin dashboard 200 path (§3, needs the admin password).
     Script: <opencode-temp>\pw\legacy-login-test.js
   * 2-browser WebRTC call against PROD -> 7/7 (see BROWSER TEST TOOLING).
     presence, call, ICE connected with real media 640x480, hangup, self-cleanup.
+  * Admin dashboard 200 path -> 5/5 (added 2026-10-17, item 4 DONE).
+    Verified against the live Netlify site. Two REAL bugs were found and
+    fixed on the way — the admin site had NEVER been able to authorize:
 
-  Not yet proven live: admin dashboard 200 path (needs the admin password);
-  the 40-post rate-limit burst (skipped remotely by design).
+      BUG A (admin.js): top-level `const supabase` collides with the
+        Supabase CDN's global `var supabase` -> SyntaxError at parse ->
+        the ENTIRE admin.js file was dead (no listeners, login inert).
+        Fixed by wrapping admin.js in an IIFE — the same fix already used
+        in public/app.js. (Live: "Identifier 'supabase' has already been
+        declared".)
+
+      BUG B (netlify/functions): the functions are ESM with
+        `export default`, which Netlify runs as Functions v2 — the handler
+        receives a web `Request`. But they read v1 fields
+        (`event.headers.authorization`, `event.httpMethod`, `event.body`).
+        `Request.headers` is a `Headers` instance, so `.authorization` was
+        ALWAYS undefined and requireAdmin() rejected with 401 for every
+        caller, admins included (functions returned 401 with a perfectly
+        valid token). Fixed with shape-tolerant helpers
+        getHeader()/getMethod()/getJsonBody() in _shared/supabase.js;
+        send-reset.js now uses them too.
+
+  Not yet proven live: the 40-post rate-limit burst (skipped remotely by
+  design).
+
+  UI/LAYOUT COMMITS (pushed, NOT yet on Render — Render has no auto-deploy):
+    16e8448  full-bleed sticky header; themed scrollbar; wider column
+             (--col, 980px) on screens >=1200px
+    59f41ce  sent tick "✓" only on your OWN posts (was "✓✓" on every post,
+             which reads as a read receipt on a public board)
+  The user's report: (a) the header was a narrow 860px strip that left a
+  native scrollbar's ▲/▼ buttons sitting in the empty doodle area beside it —
+  fixed by making the header span the full width; (b) every message showed
+  ✓✓ — fixed; (c) "all messages left-aligned" is NOT a bug: posts you send
+  get .own → right-aligned + --bubble-out + blue ticks (verified in code);
+  the screenshot simply had none of your posts.
 
 ================================================================================
 ## SESSION 2026-10-17 — PUSH-FIRST + GITHUB APP (read this before deploying)
@@ -68,8 +101,9 @@ Other verified 2026-10-17 updates:
    * CHAT_APP_URL IS NOW SET on the Netlify admin site (updated 2026-10-05).
      The old "CONFIRMED MISSING" note in §3 is stale — verified via the
      Netlify API: the site now has 4 env vars. Nothing to do here.
-   * Admin site healthy: GET / → 200; all 4 functions still return 401/405
-     unauthenticated (the LOCK path). The 200 UNLOCK path is still unproven.
+   * Admin site healthy: GET / → 200; all 4 functions return 401/405
+     unauthenticated (the LOCK path). The 200 UNLOCK path is now VERIFIED —
+     it had been broken by BUG A + BUG B (see LIVE VERIFICATION).
    * Browser test tooling EXISTS now (see the new "BROWSER TEST TOOLING"
      section): Playwright + Chromium installed, and a 2-browser WebRTC call
      test PASSES 7/7 against the live Supabase backend. Worklist 6 and 12
@@ -86,10 +120,15 @@ Still open — none of it is code:
   1. Rotate the Render + Supabase API tokens (both leaked in chat history). §1
   2. Render's auto-deploy still does NOT fire — the Render GitHub App is not
      installed (re-confirmed 2026-10-17; see the 2026-10-17 block). §2
-  3. Admin dashboard 200 path still unproven (needs the admin password). §3
-  4. TURN relay for calls on real networks. §6 / item 11
+  3. TURN relay for calls on real networks. §6 / item 11
   DONE: env vars + deploy (§0), CHAT_APP_URL, browser UI signup + legacy login,
-  2-browser WebRTC call test, Playwright install.
+  admin dashboard 200 path (5/5 — found + fixed two real admin bugs: the
+  `supabase` global collision in admin.js, and the v2-Request/v1-event shape
+  mismatch that made every privileged function 401), 2-browser WebRTC call
+  test, Playwright install.
+  OPEN (small): a CSP inline-script violation is reported on the admin page
+  console even though there is no inline <script> in the HTML — see the
+  BROWSER TEST TOOLING note. Cosmetic; login works.
 
 --------------------------------------------------------------------------------
 ## DEPLOY SAGA — RESOLVED 2026-10-17 (kept for history)
@@ -230,11 +269,17 @@ BLOCKING / SECURITY
                                                  statuses, 0 deployments on 3e5d75d)
 
 UNVERIFIED — highest product risk
-  [ ] 4. Verify admin dashboard 200 path ........ §3  (only ever saw the 401 LOCK —
-                                                 re-confirmed 401/405 on all 4
-                                                 functions 2026-10-17; a Playwright
-                                                 test now exists, needs the admin
-                                                 password)
+  [x] 4. Verify admin dashboard 200 path ........ DONE 2026-10-17. It was NOT
+                                                 just unverified — the admin
+                                                 site could never authorize.
+                                                 Found and fixed BUG A (the
+                                                 `supabase` global collision
+                                                 killing all of admin.js) and
+                                                 BUG B (functions read v1
+                                                 `event.*` while Netlify ran
+                                                 them as v2 `Request` →
+                                                 always 401). Now 5/5. See the
+                                                 LIVE VERIFICATION block.
   [x] 5. Sign up through the real browser UI .... DONE 2026-10-17 (Playwright,
                                                  against PROD): fresh UI signup
                                                  ×2 works, and a legacy
@@ -285,8 +330,31 @@ them) at:  C:\Users\Albert\AppData\Local\Temp\opencode\pw
                        legacy-login fix end-to-end. Self-cleaning.
   admin-test.js        Admin dashboard 200-path test. Credentials via env:
                          $env:ADMIN_EMAIL="..."; $env:ADMIN_PASSWORD="..."; node admin-test.js
+                       PASSES 5/5 against the live Netlify site (2026-10-17).
+                       The temp-admin trick below is how it was verified without
+                       touching the real admin's password.
+  setup-temp-admin.js  Creates tmp-admin@walltap.test and sets
+                       profiles.is_admin = true (service role), mirroring
+                       `npm run provision-admin`. Prints the creds.
+  verify-admin-path.js Signs in and calls the 3 privileged functions directly —
+                       the fastest way to tell a UI bug from a function bug.
+  remove-temp-users.js Deletes tmp-admin plus any leftover test accounts.
+                       ONLY matches synthetic patterns (tmp-/e2e-/pw/dbg/ui/
+                       legacy prefixes) — never a real account.
   debug-presence.js    Dumps presence/online-bar state for two users.
   cleanup-test-users.js  Deletes leftover pw*/dbg* test users (service key).
+
+ADMIN 200-PATH RECIPE (order matters):
+  1. node setup-temp-admin.js
+  2. $env:ADMIN_EMAIL="tmp-admin@walltap.test"
+     $env:ADMIN_PASSWORD="Test-admin-123!"
+     node admin-test.js          # expect 5/5
+  3. node remove-temp-users.js   # expect "removed 1"
+
+KNOWN COSMETIC ISSUE: the admin page console logs a CSP "Executing inline
+script violates" error. There is NO inline <script> in walltap-admin/index.html
+(checked), and the dashboard works, so it is noisy rather than fatal. The
+violation reports source=about, so it is not one of our files.
 
 GOTCHA: the app LOWERCASES usernames. Signup stores display_name lowercased,
 so a chip title is "Call pwbbbbbb" not "Call pwBbbbbb". Match case-insensitively.
