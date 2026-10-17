@@ -1,13 +1,62 @@
 ================================================================================
 WALLTAP — SESSION HANDOVER
-Last updated: 2026-10-11 (end of session)
+Last updated: 2026-10-17
 Live: https://walltap.onrender.com  ·  https://walltap-admin.netlify.app
 
-START HERE: LIVE STATE → latest verified state is in the "DEPLOY SAGA"
-section below (the service URL is up but UNCONFIGURED: 0 env vars, old code).
-Fix that before trusting anything else → then the WORKLIST.
+START HERE: LIVE STATE → the service is still UNCONFIGURED (0 env vars, old
+code). TWO things block a working deploy, both verified on 2026-10-17:
+  (a) the 4 env vars are missing on the Render service (dashboard-only), and
+  (b) the fix commits had NEVER been pushed to GitHub (Render builds from
+      GitHub, so "deploy latest commit" would have shipped the broken login).
+(b) is now FIXED — origin/master = 3e5d75d. See the 2026-10-17 block below.
 ================================================================================
 
+## SESSION 2026-10-17 — PUSH-FIRST + GITHUB APP (read this before deploying)
+
+Two lessons that cost a whole cycle. Both verified against the live GitHub API.
+
+1. PUSH BEFORE YOU EXPECT A DEPLOY (this was a real, silent trap).
+   Local HEAD was 3 commits AHEAD of origin/master:
+     3e5d75d docs … deploy saga
+     8fd9c4c chore: pin Node engine to >=20 <26
+     d5f2520 fix: keep process alive + legacy username → real email   ← critical
+   GitHub master was still at 8f529e1 (2026-10-05). Render builds from
+   GitHub, so "Manual Deploy → Deploy latest commit" could NOT have shown
+   8fd9c4c — the code was not there. The old plan said "must show 8fd9c4c",
+   which was impossible. FIXED on 2026-10-17: pushed 8f529e1..3e5d75d,
+   origin/master is now 3e5d75d.
+   ALWAYS, before deploying:
+     git fetch origin; git rev-list --left-right --count origin/master...HEAD
+   If the left number is not 0, you are deploying stale code. The deploy
+   "latest commit" sha must equal `git rev-parse HEAD`.
+
+2. GITHUB APP IS STILL NOT INSTALLED (auto-deploy STILL dead) — re-confirmed.
+   Unauthenticated GitHub API on repo 12ALBERT-K/walltap returned:
+     commits/master/check-runs → total_count 0
+     commits/master/status     → total_count 0
+     /deployments              → 0
+   Re-checked on 3e5d75d AFTER the push: still all 0. A working Render GitHub
+   integration posts a check-run/deployment on every push. It posts nothing.
+   So renders never fire on push; every deploy in history is trigger=api.
+   FIX (needs a browser + your GitHub account): Render dashboard → walltap
+   service → Settings → Build & Deploy → connect GitHub; OR
+   github.com → Settings → Applications → Installed GitHub Apps → Render →
+   Configure → add access to 12ALBERT-K/walltap. Verify by pushing a no-op
+   commit and watching a build start on its own within ~1 min.
+   There is no `gh` CLI on this machine (plan §8) — this is a manual step.
+
+Other verified 2026-10-17 updates:
+   * CHAT_APP_URL IS NOW SET on the Netlify admin site (updated 2026-10-05).
+     The old "CONFIRMED MISSING" note in §3 is stale — verified via the
+     Netlify API: the site now has 4 env vars. Nothing to do here.
+   * Admin site healthy: GET / → 200; all 4 functions still return 401/405
+     unauthenticated (the LOCK path). The 200 UNLOCK path is still unproven.
+   * Browser test tooling EXISTS now (see the new "BROWSER TEST TOOLING"
+     section): Playwright + Chromium installed, and a 2-browser WebRTC call
+     test PASSES 7/7 against the live Supabase backend. Worklist 6 and 12
+     are effectively done.
+
+--------------------------------------------------------------------------------
 ## TL;DR — WHERE THINGS STAND
 
 Code is fully FIXED and verified locally + against live Supabase; the site is up
@@ -15,11 +64,14 @@ but the NEW Render service is UNCONFIGURED right now (0 env vars, old commit), s
 the live API returns 503 "Server is not configured yet." Steps to finish are in
 the DEPLOY SAGA section below — they are mostly dashboard clicks, no code.
 
-Still blocking "done" (unchanged):
-  1. Set the 8 env vars on the walltap Render service + redeploy latest commit.
+Still blocking "done" (updated 2026-10-17):
+  1. Set the 8 env vars on the walltap Render service + redeploy latest commit
+     (dashboard-only; the code to deploy is now on GitHub at 3e5d75d).
   2. Rotate the Render + Supabase API tokens (both are leaked in chat history).
-  3. Render's auto-deploy is NOT firing — pushes sit undeployed until triggered.
-  4. CHAT_APP_URL is missing on the Netlify admin site (section 3).
+  3. Render's auto-deploy is NOT firing — the Render GitHub App is not
+     installed (re-confirmed 2026-10-17; see the 2026-10-17 block).
+  4. ~~CHAT_APP_URL is missing on the Netlify admin site~~ DONE — it is set
+     (verified 2026-10-17). Nothing to do.
 
 -------------------------------------------------------------------------------
 ## DEPLOY SAGA (2026-10-11, evening) — NEW Render service, CURRENT LIVE STATE
@@ -43,12 +95,18 @@ https://walltap.onrender.com. Verified live at the end of the session:
     the service to build from 12ALBERT-K/walltap@master with `npm ci`.
 
 NEXT STEPS (all dashboard, no code):
+  [ ] FIRST: confirm GitHub has the code — origin/master must be 3e5d75d.
+      git fetch origin; git rev-list --left-right --count origin/master...HEAD
+      The RIGHT number must be 0. (On 2026-10-17 this was 3 — the fix commits
+      were unpushed. Now fixed.)
   [ ] Render service -> Environment -> paste real values: SUPABASE_URL,
       SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DATABASE_URL
       (pooler + sslmode=no-verify), MAX_FILE_SIZE_MB=15, MAX_FILES=5,
       STORAGE_BUCKET=uploads, SIGNED_URL_TTL_SECONDS=604800, NODE_VERSION=20.
       Save triggers an auto-redeploy.
-  [ ] Then Manual Deploy -> Deploy latest commit on master (must show 8fd9c4c).
+  [ ] Then Manual Deploy -> Deploy latest commit on master (must show 3e5d75d,
+      which must equal `git rev-parse HEAD`; older plans said 8fd9c4c, which
+      was never on GitHub).
   [ ] Success check: /config.js returns the real URL; /api/posts -> 401,
       not 503. Then re-run the live login verification (see §3 / Chrome pass).
 
@@ -123,7 +181,7 @@ Investigated live. Root causes found and FIXED + VERIFIED in code
             "expected string, received array". The field is NOT called
             redirect_uri — patching that name is a silent no-op.
 
-  Git HEAD main repo  8fd9c4c   ·   admin repo  6af955e
+  Git HEAD main repo  3e5d75d   ·   admin repo  6af955e
 
 --------------------------------------------------------------------------------
 ## WORKLIST — PICK THESE UP NEXT TIME
@@ -131,26 +189,42 @@ Investigated live. Root causes found and FIXED + VERIFIED in code
 Ordered by urgency. Detail for each is in the numbered section noted.
 
 DO THIS NOW — the site is up but not live-functional (see DEPLOY SAGA):
+  [x] -1. Push the fix commits — DONE 2026-10-17. origin/master was stuck at
+           8f529e1; now 3e5d75d. Without this, ANY "deploy latest commit"
+           shipped the broken login. Verify with:
+             git fetch origin; git rev-list --left-right --count origin/master...HEAD
+           (right number must be 0).
   [ ] 0. Set the env vars on the walltap Render service + redeploy latest
-          commit (must show 8fd9c4c). Until then /api/posts -> 503 and
+          commit (must show 3e5d75d). Until then /api/posts -> 503 and
           /config.js -> SUPABASE_URL="" and NONE of the login fixes are live.
 
 BLOCKING / SECURITY
   [ ] 1. Rotate Render API key .................. §1  (you do it, then I redeploy)
   [ ] 2. Rotate Supabase PAT ................... §1  (update Render + Netlify, then revoke)
-  [ ] 3. Install Render GitHub App on repo ..... §2  (auto-deploy never worked)
+  [ ] 3. Install Render GitHub App on repo ..... §2  (re-confirmed NOT installed
+                                                 2026-10-17: 0 check-runs, 0
+                                                 statuses, 0 deployments on 3e5d75d)
 
 UNVERIFIED — highest product risk
-  [ ] 4. Verify admin dashboard 200 path ........ §3  (only ever saw the 401 LOCK;
-                                                  needs the admin password, which
-                                                  is NOT recoverable from here)
-  [x] 5. Sign up through the real browser UI .... done 2026-10-11 in headless
-                                                  Chrome (15/15 incl. legacy
-                                                  username login + 2nd device) —
-                                                  re-verify once the deploy is live
-  [ ] 6. 2-browser WebRTC call test .............. §3  (never done at all)
+  [ ] 4. Verify admin dashboard 200 path ........ §3  (only ever saw the 401 LOCK —
+                                                 re-confirmed 401/405 on all 4
+                                                 functions 2026-10-17; a Playwright
+                                                 test now exists, needs the admin
+                                                 password)
+  [x] 5. Sign up through the real browser UI .... done 2026-10-11 (15/15) AND
+                                                 re-proven 2026-10-17 by the
+                                                 Playwright call test (real UI
+                                                 signup ×2) — re-verify live once
+                                                 the deploy is up
+  [x] 6. 2-browser WebRTC call test ............. §3  DONE 2026-10-17:
+                                                 Playwright test PASSES 7/7
+                                                 (presence, call, ICE, real
+                                                 remote media, hangup) against
+                                                 the live Supabase backend.
+                                                 Localhost-only so far — still
+                                                 no TURN (item 11).
 
-CODE FIXES — all done in code, commit pending the §0 deploy
+CODE FIXES — all done in code, committed AND pushed (commit 3e5d75d)
   [x] 7.  Uploads return 400 not 500 ............ §6  (err.statusCode=400 in fileFilter)
   [x] 8.  logEvent silent failures .............. §6  (checks result.error explicitly)
   [x] 9.  backfill-profiles pagination .......... §6  (paginated in commit 8f529e1)
@@ -160,10 +234,35 @@ CODE FIXES — all done in code, commit pending the §0 deploy
 
 OPTIONAL / BLOCKED ON CREDITS OR INSTALLS
   [ ] 11. Add TURN relay for calls .............. §6  (needs Cloudflare/Twilio creds)
-  [ ] 12. Install Playwright Chromium ........... §3  (so UI can be tested for real)
+  [x] 12. Install Playwright Chromium ........... §3  DONE 2026-10-17 (in a scratch
+                                                 dir, NOT the repo, so Render's
+                                                 `npm ci` is unaffected)
   [ ] 13. Rate-limiter test against deploy ...... §3  (skipped remotely by design)
   [ ] 14. Reclaim username "admin" ............. §4  (needs old acct deleted first)
   [ ] 15. Delete admin@walltap.local ............ §4  (demoted, still exists)
+
+--------------------------------------------------------------------------------
+## BROWSER TEST TOOLING (added 2026-10-17)
+
+Playwright + Chromium live OUTSIDE the repo (so `npm ci` on Render never sees
+them) at:  C:\Users\Albert\AppData\Local\Temp\opencode\pw
+
+  call-test.js         2-browser WebRTC call test (fake media, self-cleaning).
+                       Run against a local server:
+                         $env:PORT=3999; node server.js   (in the repo)
+                         $env:BASE="http://localhost:3999"; node call-test.js
+                       Needs real test users in the DB; cleans them up.
+  admin-test.js        Admin dashboard 200-path test. Credentials via env:
+                         $env:ADMIN_EMAIL="..."; $env:ADMIN_PASSWORD="..."; node admin-test.js
+  debug-presence.js    Dumps presence/online-bar state for two users.
+  cleanup-test-users.js  Deletes leftover pw*/dbg* test users (service key).
+
+GOTCHA: the app LOWERCASES usernames. Signup stores display_name lowercased,
+so a chip title is "Call pwbbbbbb" not "Call pwBbbbbb". Match case-insensitively.
+
+Also note .env for the repo holds STORAGE_BUCKET=uploads etc.; DATABASE_URL
+there uses the pooler on port 5432 (session mode) with sslmode=no-verify and
+works — confirmed by a full local server boot + 41/41 e2e against live Supabase.
 
 --------------------------------------------------------------------------------
 ## 1. DO THIS FIRST (security)
@@ -181,7 +280,7 @@ NOTE: I did not rotate these myself — rotating changes production env vars and
 revoking first would break the live app, so it needs your confirmation.
 
 --------------------------------------------------------------------------------
-## 2. DO THIS SECOND (auto-deploy is broken — ROOT CAUSE NOW CONFIRMED)
+## 2. DO THIS SECOND (auto-deploy is broken — ROOT CAUSE CONFIRMED, STILL OPEN)
 
 DIAGNOSIS: Render's GitHub App is NOT installed on this repo, so Render never
 receives push events. Evidence gathered:
@@ -192,6 +291,10 @@ receives push events. Evidence gathered:
     have ZERO GitHub status contexts and ZERO check-runs. A working Render
     integration would post status checks on every build.
   * Every deploy in history has trigger=api, never trigger=commit.
+  * RE-CONFIRMED 2026-10-17 on the freshly-pushed commit 3e5d75d via the public
+    GitHub API: check-runs 0, status contexts 0, deployments 0. Nothing fires.
+    Command:
+      Invoke-RestMethod https://api.github.com/repos/12ALBERT-K/walltap/commits/<sha>/check-runs
 So auto-deploy has NEVER worked here. Everything currently live only reached
 production because a deploy was triggered by API. (Correction: an earlier note
 in this session claimed Render redeploys automatically — that was wrong.)
@@ -227,20 +330,14 @@ in this session claimed Render redeploys automatically — that was wrong.)
 
 These are the gaps. Nothing here was proven; don't assume it works.
 
-[ ] SET CHAT_APP_URL ON NETLIFY — CONFIRMED MISSING (re-verified 2026-10-04)
-    The site has only 3 env vars: SUPABASE_URL, SUPABASE_ANON_KEY,
-    SUPABASE_SERVICE_ROLE_KEY. CHAT_APP_URL is NOT set, despite a deploy titled
-    "deploy admin dashboard with CHAT_APP_URL wired to render" — so it was
-    likely set only in a local/shell context, never on the site, or was lost.
-    Anything in the dashboard that links to or proxies the chat app will point
-    nowhere until this is set. Fix:
-      cd walltap-admin
-      netlify env:set CHAT_APP_URL "https://walltap.onrender.com"
-      netlify deploy --prod --dir .     (or let it redeploy on next push)
-    Verify with:  netlify env:list   → expect 4 keys.
-    Note: the current deploy is otherwise healthy — state=ready with all 4
-    functions bundled (analytics-summary, list-all-messages, list-users,
-    send-reset).
+[x] SET CHAT_APP_URL ON NETLIFY — DONE (verified 2026-10-17).
+    Earlier notes (2026-10-04) said it was MISSING. It is NOT missing anymore:
+    the Netlify API shows 4 env vars on site 83591264-d13d-4099-9d45-495b860b495b,
+    and CHAT_APP_URL was last updated 2026-10-05. Verified with:
+      GET https://api.netlify.com/api/v1/accounts/<acct>/env?site_id=<site>
+    Nothing to do here. (The local `netlify` CLI hung when run from this machine;
+    query the Netlify REST API with the token in
+    %APPDATA%\netlify\Config\config.json instead.)
 
 [ ] LOAD THE ADMIN DASHBOARD ONCE
     Sign in as wacudigitalhub@gmail.com on walltap.onrender.com, open the admin
@@ -249,15 +346,21 @@ These are the gaps. Nothing here was proven; don't assume it works.
     empty, that's the bug. Do this AFTER setting CHAT_APP_URL above.
 
 [ ] SIGN UP THROUGH THE BROWSER UI
-    The API signup path is proven. Actual clicks/typing are not. Hard-refresh
-    (Ctrl+Shift+R) first — a cached app.js is still the broken one.
+    The API signup path is proven. Actual clicks/typing were re-proven
+    2026-10-17 by the Playwright call test (real UI signup ×2 against the live
+    Supabase). Still worth a manual pass on the LIVE deploy once it is up —
+    hard-refresh (Ctrl+Shift+R) first, a cached app.js is still the broken one.
 
-[ ] 2-BROWSER CALL TEST (never done, carried over from last session)
-    Start two browsers, call each other, watch logs. Start server with:
-      $env:PORT=3999; node server.js
-    Known limit: STUN-only, no TURN, so calls fail on symmetric NAT / corporate
-    / most mobile networks. There is also no connect-phase timeout, so a failed
-    call can hang on "Connecting…" with the camera still on.
+[x] 2-BROWSER CALL TEST — DONE 2026-10-17
+    Script: <opencode-temp>\pw\call-test.js (Playwright, fake media).
+    PASSES 7/7 against the live Supabase realtime backend on localhost:
+    signup ×2, presence sync, outgoing/incoming, offer/answer, ICE connected
+    with real remote media (640x480), clean hangup on both sides.
+    Remaining gaps (unchanged): STUN-only, no TURN, so it still fails on
+    symmetric NAT / corporate / mobile networks; and there is no connect-phase
+    timeout, so a failed call can hang on "Connecting…" with the camera on.
+    Re-run it against the live deploy once the env vars are set:
+      $env:BASE="https://walltap.onrender.com"; node call-test.js
 
 [ ] RATE LIMITER ON THE DEPLOY
     The 40-post burst test is SKIPPED against a remote host (it needs two source
@@ -351,6 +454,10 @@ Commits (main repo, master): 37b69d8 · 0a91414 · acbd7a5 · a06801e · 27120be
 --------------------------------------------------------------------------------
 ## 7. HOW TO RE-RUN THE TESTS
 
+  # ALWAYS FIRST: are we deploying what we think? (see 2026-10-17 block)
+  git fetch origin; git rev-list --left-right --count origin/master...HEAD
+  # right number must be 0
+
   # preflight (env/hygiene checks — run before every commit)
   node scripts\preflight.js
 
@@ -362,6 +469,16 @@ Commits (main repo, master): 37b69d8 · 0a91414 · acbd7a5 · a06801e · 27120be
 
   # create another admin
   npm run provision-admin -- --promote    # --promote required for existing accts
+
+  # Playwright browser tests (live in the temp scratch dir, not the repo — see
+  # the BROWSER TEST TOOLING section near the top):
+  #   2-browser WebRTC call test (needs a running server + real DB):
+  #     $env:PORT=3999; node server.js          # in the repo
+  #     $env:BASE="http://localhost:3999"; node "$env:TEMP\..\opencode\pw\call-test.js"
+  #   admin dashboard 200-path:
+  #     $env:ADMIN_EMAIL="..."; $env:ADMIN_PASSWORD="..."; node ...\pw\admin-test.js
+  #   clean up any leftover pw*/dbg* test users:
+  #     node ...\pw\cleanup-test-users.js
 
 --------------------------------------------------------------------------------
 ## 8. CREDENTIALS LEAKED IN THIS SESSION — ALL NEED ROTATION
