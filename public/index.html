@@ -987,7 +987,7 @@
       :root { --col: 980px; }
     }
 
-    /* Wide screens: the online list becomes a VERTICAL sidebar down the right
+    /* Wide screens: the online list becomes a VERTICAL sidebar down the LEFT
        side, so it reads as a people panel (one person per row, tap to call)
        instead of a thin strip marooned under the header. Narrow screens keep
        the horizontal bar from the base rules above. */
@@ -996,9 +996,8 @@
         flex-direction: row;
         align-items: stretch;
       }
-      .board-main { order: 1; }
+      /* DOM order already puts the online sidebar first (left). */
       .online-bar {
-        order: 2;
         align-self: flex-start;
         position: sticky;
         top: var(--header-h);
@@ -1014,7 +1013,7 @@
         overflow-x: hidden;
         overflow-y: auto;
         border-bottom: none;
-        border-left: 1px solid var(--border);
+        border-right: 1px solid var(--border);
         background: transparent;
         backdrop-filter: none;
       }
@@ -1032,9 +1031,9 @@
       }
       .online-chip .call-ic { margin-left: auto; }
       /* Keep the fixed composer in line with the shifted reading column. */
-      body.has-peers .tray { padding-right: calc(var(--rail) + 1rem); }
+      body.has-peers .tray { padding-left: calc(var(--rail) + 1rem); }
       body.has-peers #attach-preview {
-        transform: translateX(calc(-50% - var(--rail) / 2));
+        transform: translateX(calc(-50% + var(--rail) / 2));
       }
     }
 

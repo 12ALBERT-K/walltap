@@ -64,7 +64,7 @@ the admin dashboard 200 path (§3) were both completed on 2026-10-18.
   ONLINE-PEOPLE LIST — made vertical 2026-10-18 (same day, follow-up):
     The "who's online / tap to call" list (#online-bar) was a thin horizontal
     strip wedged under the header. On screens >=1100px it is now a VERTICAL
-    sidebar down the right-hand side (240px, sticky under the header), one
+    sidebar down the LEFT-hand side (240px, sticky under the header), one
     person per row (green dot · name · call icon). Narrow screens keep the
     compact horizontal strip. Implementation: app.js wraps the feed in
     .board-main inside a new .board-body flex row, and toggles
@@ -72,7 +72,7 @@ the admin dashboard 200 path (§3) were both completed on 2026-10-18.
     aligned with the shifted reading column. app.js also publishes the real
     header height as --header-h for correct sticky offsets.
     Verified locally in Chromium at 1440/1280/1100 (rail: chips stacked
-    vertically, right of the feed, no overlap, no horizontal overflow) and
+    vertically, LEFT of the feed, no overlap, no horizontal overflow) and
     1000/700 (strip). Real 2-user presence + call test still 7/7.
 
   Prod measurements at a 1440px viewport: .board-header width == 1440
