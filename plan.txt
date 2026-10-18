@@ -7,8 +7,8 @@ START HERE: THE SITE IS DEPLOYED AND VERIFIED (2026-10-17). The Render env vars
 are set, /api/posts returns 401 (not 503), /config.js returns the real URL, and
 the login fixes are proven live in a real browser. See "LIVE VERIFICATION
 2026-10-17" below for the exact evidence and how to re-run it.
-Remaining work is NOT code: token rotation (§1), the Render GitHub App (§2),
-and the admin dashboard 200 path (§3, needs the admin password).
+Remaining work is NOT code: token rotation (§1). The Render GitHub App (§2) and
+the admin dashboard 200 path (§3) were both completed on 2026-10-18.
 ================================================================================
 ## LIVE VERIFICATION — 2026-10-17 (all against https://walltap.onrender.com)
 
@@ -90,20 +90,14 @@ Two lessons that cost a whole cycle. Both verified against the live GitHub API.
    If the left number is not 0, you are deploying stale code. The deploy
    "latest commit" sha must equal `git rev-parse HEAD`.
 
-2. GITHUB APP IS STILL NOT INSTALLED (auto-deploy STILL dead) — re-confirmed.
-   Unauthenticated GitHub API on repo 12ALBERT-K/walltap returned:
-     commits/master/check-runs → total_count 0
-     commits/master/status     → total_count 0
-     /deployments              → 0
-   Re-checked on 3e5d75d AFTER the push: still all 0. A working Render GitHub
-   integration posts a check-run/deployment on every push. It posts nothing.
-   So renders never fire on push; every deploy in history is trigger=api.
-   FIX (needs a browser + your GitHub account): Render dashboard → walltap
-   service → Settings → Build & Deploy → connect GitHub; OR
-   github.com → Settings → Applications → Installed GitHub Apps → Render →
-   Configure → add access to 12ALBERT-K/walltap. Verify by pushing a no-op
-   commit and watching a build start on its own within ~1 min.
-   There is no `gh` CLI on this machine (plan §8) — this is a manual step.
+2. GITHUB APP — RESOLVED 2026-10-18. Auto-deploy now WORKS: the Render GitHub
+   App is installed and pushes build on their own. Proven 3x with a content
+   probe (c36bce1 <30s, 581ad13 ~40s, a9ec7b0 <75s, nobody clicked Deploy).
+   CORRECTION to the 2026-10-17 note: Render does NOT post check-runs, status
+   contexts or deployments for this repo — those endpoints are STILL empty on
+   the very commits that deployed. So "0 check-runs" was NEVER evidence of a
+   broken integration; that assumption was wrong. Test auto-deploy with a
+   content probe instead (push a comment, poll the live site for it). §2
 
 Other verified 2026-10-17 updates:
    * CHAT_APP_URL IS NOW SET on the Netlify admin site (updated 2026-10-05).
@@ -126,8 +120,9 @@ is proven in a real browser. See "LIVE VERIFICATION — 2026-10-17" at the top.
 
 Still open — none of it is code:
   1. Rotate the Render + Supabase API tokens (both leaked in chat history). §1
-  2. Render's auto-deploy still does NOT fire — the Render GitHub App is not
-     installed (re-confirmed 2026-10-17; see the 2026-10-17 block). §2
+  2. Render auto-deploy — FIXED 2026-10-18 (GitHub App installed; verified with
+     content probes). NOTE: Render publishes no check-runs/status — don't use
+     those to test it. §2
   3. TURN relay for calls on real networks. §6 / item 11
   DONE: env vars + deploy (§0), CHAT_APP_URL, browser UI signup + legacy login,
   admin dashboard 200 path (5/5 — found + fixed two real admin bugs: the
@@ -272,9 +267,11 @@ DO THIS NOW — the site is up but not live-functional (see DEPLOY SAGA):
 BLOCKING / SECURITY
   [ ] 1. Rotate Render API key .................. §1  (you do it, then I redeploy)
   [ ] 2. Rotate Supabase PAT ................... §1  (update Render + Netlify, then revoke)
-  [ ] 3. Install Render GitHub App on repo ..... §2  (re-confirmed NOT installed
-                                                 2026-10-17: 0 check-runs, 0
-                                                 statuses, 0 deployments on 3e5d75d)
+  [x] 3. Install Render GitHub App on repo ..... DONE 2026-10-18. Auto-deploy
+                                                 works (verified 3x with content
+                                                 probes). NB: Render posts NO
+                                                 check-runs/statuses — that was
+                                                 a false signal 2026-10-17.
 
 UNVERIFIED — highest product risk
   [x] 4. Verify admin dashboard 200 path ........ DONE 2026-10-17. It was NOT
@@ -387,32 +384,44 @@ NOTE: I did not rotate these myself — rotating changes production env vars and
 revoking first would break the live app, so it needs your confirmation.
 
 --------------------------------------------------------------------------------
-## 2. DO THIS SECOND (auto-deploy is broken — ROOT CAUSE CONFIRMED, STILL OPEN)
+## 2. RESOLVED 2026-10-18 (auto-deploy now WORKS — the GitHub App is installed)
 
-DIAGNOSIS: Render's GitHub App is NOT installed on this repo, so Render never
-receives push events. Evidence gathered:
-  * Service config is all CORRECT — branch=master, autoDeploy=yes,
+STATUS: FIXED. The Render GitHub App is now installed, and pushes auto-deploy.
+Verified three times on 2026-10-18 with a harmless comment probe in
+public/index.html:
+  * c36bce1 (probe added)  -> live in <30s
+  * 581ad13 (probe 2)      -> live in ~40s
+  * a9ec7b0 (probe removed)-> live in <75s
+Nobody clicked Manual Deploy for any of them. Prod serves the new bytes each
+time, so these are real push-triggered builds.
+
+IMPORTANT CORRECTION to the old diagnosis below: Render does NOT post GitHub
+check-runs or status contexts for this repo — `/commits/<sha>/check-runs` and
+`/status` are STILL empty on every one of the commits above, yet the deploys
+ran. "Zero check-runs" is therefore NOT evidence that the integration is
+broken; it was a wrong assumption. The reliable test is a content probe:
+push a comment, then poll the live site for it (see
+<opencode-temp>\pw\watch2.js).
+
+The HISTORY below is kept because the "push before you deploy" lesson is
+still valid.
+
+HISTORY — DIAGNOSIS (2026-10-17): Render's GitHub App was NOT installed, so
+Render never received push events. Evidence gathered at the time:
+  * Service config was all CORRECT — branch=master, autoDeploy=yes,
     autoDeployTrigger=commit, suspended=not_suspended, suspenders=[],
-    repo=https://github.com/12ALBERT-K/walltap. The config is not the problem.
-  * ALL 6 commits checked (aed5e86, 26b3a47, a06801e, 0a91414, acbd7a5, 37b69d8)
-    have ZERO GitHub status contexts and ZERO check-runs. A working Render
-    integration would post status checks on every build.
-  * Every deploy in history has trigger=api, never trigger=commit.
-  * RE-CONFIRMED 2026-10-17 on the freshly-pushed commit 3e5d75d via the public
-    GitHub API: check-runs 0, status contexts 0, deployments 0. Nothing fires.
-    Command:
-      Invoke-RestMethod https://api.github.com/repos/12ALBERT-K/walltap/commits/<sha>/check-runs
-So auto-deploy has NEVER worked here. Everything currently live only reached
-production because a deploy was triggered by API. (Correction: an earlier note
-in this session claimed Render redeploys automatically — that was wrong.)
+    repo=https://github.com/12ALBERT-K/walltap. The config was not the problem.
+  * Every deploy in history had trigger=api, never trigger=commit.
+  * Commits 3e5d75d and 6 older ones had ZERO status contexts and check-runs.
+So auto-deploy had never worked. Everything live until 2026-10-18 only
+reached production because a deploy was triggered by API/manual.
 
-[ ] FIX: install Render's GitHub App on 12ALBERT-K/walltap
-    Requires a browser + your GitHub account — I cannot do this.
-    Either: Render dashboard → Connect → reconnect GitHub, or
+[x] FIX (DONE 2026-10-18): installed Render's GitHub App on 12ALBERT-K/walltap.
+    Either Render dashboard → Connect → reconnect GitHub, or
     github.com → Settings → Applications → Installed GitHub Apps → Render →
-    Configure → add access to the walltap repo (All repositories is easiest).
-    Verify afterwards by pushing a no-op commit and confirming a build starts
-    on its own within ~1 min.
+    Configure → add access to the walltap repo.
+    Verify by pushing a no-op commit and confirming the live site changes
+    on its own within ~1 min (do NOT expect a check-run).
 
 [ ] UNTIL FIXED: always trigger deploys manually, then confirm.
       POST https://api.render.com/v1/services/srv-db18md1srm7s73ajatb0/deploys
