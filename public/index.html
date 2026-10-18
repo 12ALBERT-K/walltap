@@ -45,6 +45,8 @@
       --font:          "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
       --tray-h:        78px;      /* height of the fixed bottom tray */
       --col:           760px;     /* max content width (feed / tray / header) */
+      --header-h:      62px;      /* header height — measured at runtime by app.js */
+      --rail:          240px;     /* width of the online-people sidebar (wide screens) */
 
     /* Solarized doodle texture: faint sketched icons on the
        dark surface, tiled across the whole page. */
@@ -72,6 +74,22 @@
       position: relative;
       width: 100%;
       min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Body of the board: the reading column, plus — on wide screens —
+       a vertical sidebar listing who's online (see the media query below). */
+    .board-body {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .board-main {
+      flex: 1;
+      min-width: 0;
       display: flex;
       flex-direction: column;
     }
@@ -774,7 +792,7 @@
     /* -- CALLS: online presence bar -------------------------- */
     .online-bar {
       position: sticky;
-      top: 58px;
+      top: var(--header-h);
       z-index: 45;
       display: flex;
       align-items: center;
@@ -969,6 +987,57 @@
       :root { --col: 980px; }
     }
 
+    /* Wide screens: the online list becomes a VERTICAL sidebar down the right
+       side, so it reads as a people panel (one person per row, tap to call)
+       instead of a thin strip marooned under the header. Narrow screens keep
+       the horizontal bar from the base rules above. */
+    @media (min-width: 1100px) {
+      .board-body {
+        flex-direction: row;
+        align-items: stretch;
+      }
+      .board-main { order: 1; }
+      .online-bar {
+        order: 2;
+        align-self: flex-start;
+        position: sticky;
+        top: var(--header-h);
+        flex: 0 0 var(--rail);
+        width: var(--rail);
+        max-width: var(--rail);
+        max-height: calc(100vh - var(--header-h) - var(--tray-h));
+        margin: 0;
+        padding: 0.9rem 0.85rem 1rem;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.6rem;
+        overflow-x: hidden;
+        overflow-y: auto;
+        border-bottom: none;
+        border-left: 1px solid var(--border);
+        background: transparent;
+        backdrop-filter: none;
+      }
+      .online-list {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.4rem;
+      }
+      .online-chip {
+        display: flex;
+        width: 100%;
+        justify-content: flex-start;
+        border-radius: 10px;
+        padding: 0.45rem 0.7rem;
+      }
+      .online-chip .call-ic { margin-left: auto; }
+      /* Keep the fixed composer in line with the shifted reading column. */
+      body.has-peers .tray { padding-right: calc(var(--rail) + 1rem); }
+      body.has-peers #attach-preview {
+        transform: translateX(calc(-50% - var(--rail) / 2));
+      }
+    }
+
     @media (max-width: 520px) {
       .post { max-width: 92%; }
       .board-header p { display: none; }
@@ -997,13 +1066,18 @@
     </button>
   </header>
 
-  <!-- Online presence bar — who's here to call -->
-  <div class="online-bar hidden-bar" id="online-bar">
-    <span class="online-label">Online</span>
-    <div class="online-list" id="online-list"></div>
-  </div>
+  <div class="board-body">
 
-<!--
+    <!-- Live people — tap someone to start a video call.
+         Wide screens: vertical sidebar. Narrow screens: horizontal strip. -->
+    <aside class="online-bar hidden-bar" id="online-bar">
+      <span class="online-label">Online</span>
+      <div class="online-list" id="online-list"></div>
+    </aside>
+
+    <div class="board-main">
+
+  <!--
     FEED — app.js injects a new <section class="post"> here
     for every post it receives from GET /api/posts, and for
     each new post created via the compose form. The feed is
@@ -1025,6 +1099,9 @@
     Messages you erase are hidden from the board but may be retained by Walltap
     for moderation and safety purposes.
   </footer>
+
+    </div><!-- /.board-main -->
+  </div><!-- /.board-body -->
 
 </div><!-- /.board -->
 

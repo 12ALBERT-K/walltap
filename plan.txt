@@ -60,6 +60,21 @@ the admin dashboard 200 path (§3) were both completed on 2026-10-18.
              (--col, 980px) on screens >=1200px
     59f41ce  sent tick "✓" only on your OWN posts (was "✓✓" on every post,
              which reads as a read receipt on a public board)
+
+  ONLINE-PEOPLE LIST — made vertical 2026-10-18 (same day, follow-up):
+    The "who's online / tap to call" list (#online-bar) was a thin horizontal
+    strip wedged under the header. On screens >=1100px it is now a VERTICAL
+    sidebar down the right-hand side (240px, sticky under the header), one
+    person per row (green dot · name · call icon). Narrow screens keep the
+    compact horizontal strip. Implementation: app.js wraps the feed in
+    .board-main inside a new .board-body flex row, and toggles
+    body.has-peers so the fixed composer (#tray) and #attach-preview stay
+    aligned with the shifted reading column. app.js also publishes the real
+    header height as --header-h for correct sticky offsets.
+    Verified locally in Chromium at 1440/1280/1100 (rail: chips stacked
+    vertically, right of the feed, no overlap, no horizontal overflow) and
+    1000/700 (strip). Real 2-user presence + call test still 7/7.
+
   Prod measurements at a 1440px viewport: .board-header width == 1440
   (was 860), #feed width == 980, header content aligns with the bubbles at
   x=246, and other users' posts carry no tick.

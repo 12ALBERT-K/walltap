@@ -1226,6 +1226,7 @@ function renderOnlineUsers() {
   if (!onlineBar || !onlineList) return;
   const peers = currentPresencePeers();
   const peerIds = new Set(peers.keys());
+  document.body.classList.toggle("has-peers", peerIds.size > 0);
   if (peerIds.size === 0) {
     onlineBar.classList.add("hidden-bar");
     onlineList.innerHTML = "";
@@ -1797,6 +1798,19 @@ recoveryConfirmPass.addEventListener("keydown", e => {
 });
 
 logoutBtn.addEventListener("click", handleLogout);
+
+// ── Header height ─────────────────────────────────────────────
+// The online-people sidebar and the mobile strip stick directly under the
+// header, so publish its real height as --header-h (it varies at breakpoints).
+function syncHeaderHeight() {
+  const h = document.querySelector(".board-header");
+  if (h) {
+    document.documentElement.style.setProperty("--header-h", h.offsetHeight + "px");
+  }
+}
+window.addEventListener("resize", syncHeaderHeight);
+window.addEventListener("orientationchange", syncHeaderHeight);
+syncHeaderHeight();
 
 // ── Init ─────────────────────────────────────────────────────
 syncAuthToggle();
